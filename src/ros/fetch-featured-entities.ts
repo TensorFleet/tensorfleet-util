@@ -3,6 +3,7 @@
  */
 
 import type { ROS2BridgeApi } from "./ros-bridge-api";
+import { logger } from "../logger";
 
 /**
  * Data type representing an entity card with predefined callbacks
@@ -56,7 +57,7 @@ export class EntityCardDataImpl implements EntityData {
     window.parent.postMessage(message, '*');
     
     // Log for debugging
-    console.log(`EntityCardDataImpl: Card clicked - ${this.name}`, message);
+    logger.debug(`EntityCardDataImpl: Card clicked - ${this.name}`, message);
   }
 
   onInfoClick(): void {
@@ -83,7 +84,7 @@ export class EntityCardDataImpl implements EntityData {
     };
     
     window.parent.postMessage(clickMessage, '*');
-    console.log(`EntityCardDataImpl: Info button clicked - ${this.name}`, message);
+    logger.debug(`EntityCardDataImpl: Info button clicked - ${this.name}`, message);
   }
 }
 
@@ -127,7 +128,7 @@ export async function fetchFeaturedEntities(bridge: ROS2BridgeApi): Promise<Feat
             params
           ));
         } catch (parseError) {
-          console.warn(`Failed to parse params for ${nodeName}:`, parseError);
+          logger.warn(`Failed to parse params for ${nodeName}:`, parseError);
         }
       }
     }
@@ -151,7 +152,7 @@ export async function fetchFeaturedEntities(bridge: ROS2BridgeApi): Promise<Feat
             params
           ));
         } catch (parseError) {
-          console.warn(`Failed to parse params for ${nodeName}:`, parseError);
+          logger.warn(`Failed to parse params for ${nodeName}:`, parseError);
         }
       } else {
         // No params, just add with basic info

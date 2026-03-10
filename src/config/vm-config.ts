@@ -3,6 +3,8 @@
  * Extracted from vm-manager.ts for reuse in standalone panels
  */
 
+import { logger } from "../logger";
+
 // VM Configuration types
 export interface VMConfig {
   id: string;
@@ -111,7 +113,7 @@ export function getDefaultConfig(): VMConfig {
     const firstConfigId = Object.keys(VM_CONFIGS)[0];
     const fallbackConfig = VM_CONFIGS[firstConfigId];
     if (fallbackConfig) {
-      console.warn(`Warning: Default config '${DEFAULT_CONFIG_ID}' not found, using '${firstConfigId}'`);
+      logger.warn(`Warning: Default config '${DEFAULT_CONFIG_ID}' not found, using '${firstConfigId}'`);
       return fallbackConfig;
     }
     throw new Error('No VM configurations available');

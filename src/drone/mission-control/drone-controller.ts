@@ -10,6 +10,7 @@
 import * as RosTypes from "../../ros/ros-types"
 import { DroneStateModel, LANDED } from "../drone-state-model";
 import type { ROS2BridgeApi } from "../../ros/ros-bridge-api";
+import { logger } from "../../logger";
 import deepEqual from "fast-deep-equal";
 
 export enum LandedState {
@@ -118,37 +119,37 @@ export class DroneController {
     await this._requireConnected();
 
     if (await this.model.isArmed()) {
-      console.log("[DRONE_CONTROLLER] Drone already armed. Skipping arm command");
+      logger.info("[DRONE_CONTROLLER] Drone already armed. Skipping arm command");
       return;
     }
 
-    console.log("[DRONE_CONTROLLER] Sending arm command...");
+    logger.info("[DRONE_CONTROLLER] Sending arm command...");
 
     // Workaround. arm might fail due to unsupported state for arm.
     if (await this.model.isLanded()) {
-      console.log("[DRONE_CONTROLLER] Is in landed state while trying to arm. Switching vehicle mode to AUTO.LOITER");
+      logger.info("[DRONE_CONTROLLER] Is in landed state while trying to arm. Switching vehicle mode to AUTO.LOITER");
       await this.setMode("AUTO.LOITER");  
     }
 
     const result = await this.mavrosArmDisarm(true);
-    console.log("[DRONE_CONTROLLER] Arm command result:", result);
+    logger.info("[DRONE_CONTROLLER] Arm command result:", result);
   }
 
   async disarm(): Promise<void> {
     await this._requireConnected();
-    console.log("[DRONE_CONTROLLER] Sending disarm command...");
+    logger.info("[DRONE_CONTROLLER] Sending disarm command...");
     const result = await this.mavrosArmDisarm(false);
-    console.log("[DRONE_CONTROLLER] Disarm command result:", result);
+    logger.info("[DRONE_CONTROLLER] Disarm command result:", result);
   }
 
   async setMode(mode: string, base = 0, debug = true): Promise<void> {
     await this._requireConnected();
     if(debug) {
-      console.log(`[DRONE_CONTROLLER] Setting mode to ${mode} (base=${base})...`);
+      logger.info(`[DRONE_CONTROLLER] Setting mode to ${mode} (base=${base})...`);
     }
     const result = await this.mavrosSetMode(mode, base);
     if(debug) {
-      console.log("[DRONE_CONTROLLER] Set mode result:", result);
+      logger.info("[DRONE_CONTROLLER] Set mode result:", result);
     }
   }
 
@@ -162,7 +163,7 @@ export class DroneController {
     const lon_deg = gp.lon;
     const yaw_deg = yawRad * 180 / Math.PI;
 
-    console.log(`[DRONE_CONTROLLER] Sending takeoff command: alt=${altMeters}m, yaw=${yaw_deg}° at lat=${lat_deg}, lon=${lon_deg}...`);
+    logger.info(`[DRONE_CONTROLLER] Sending takeoff command: alt=${altMeters}m, yaw=${yaw_deg}° at lat=${lat_deg}, lon=${lon_deg}...`);
     const result = await this.mavrosCommandLong({
       command: DroneController.MAV_CMD_NAV_TAKEOFF,
       param1: 0,
@@ -175,21 +176,21 @@ export class DroneController {
       confirmation: 0,
       broadcast: false,
     });
-    console.log("[DRONE_CONTROLLER] Takeoff command result:", result);
+    logger.info("[DRONE_CONTROLLER] Takeoff command result:", result);
   }
 
   async land(): Promise<void> {
     await this._requireConnected();
-    console.log("[DRONE_CONTROLLER] Sending land command...");
+    logger.info("[DRONE_CONTROLLER] Sending land command...");
     const result = await this.mavrosLand();
-    console.log("[DRONE_CONTROLLER] Land command result:", result);
+    logger.info("[DRONE_CONTROLLER] Land command result:", result);
   }
 
   async rtl(): Promise<void> {
     await this._requireConnected();
-    console.log("[DRONE_CONTROLLER] Sending return-to-launch (RTL) command...");
+    logger.info("[DRONE_CONTROLLER] Sending return-to-launch (RTL) command...");
     const result = await this.mavrosSetMode("AUTO.RTL", 0);
-    console.log("[DRONE_CONTROLLER] RTL command result:", result);
+    logger.info("[DRONE_CONTROLLER] RTL command result:", result);
   }
 
   // -------- Requested state / auto state management --------
@@ -203,9 +204,9 @@ export class DroneController {
         await this.sleep(100);
       }
 
-      console.log("[DRONE_CONTROLLER] Target auto state reached:\n", state);
+      logger.info("[DRONE_CONTROLLER] Target auto state reached:\n", state);
     } else {
-      console.log("[DRONE_CONTROLLER] Target auto state cleared");
+      logger.info("[DRONE_CONTROLLER] Target auto state cleared");
     }
   }
 
@@ -223,7 +224,7 @@ export class DroneController {
       const onGround = currentState.extended?.landed_state === LANDED.ON_GROUND;
 
     if(debug) {
-      console.log("[AUTO_STATE] Requested :", this.targetAutoState, "\nCurrent state :", { extended: currentState.extended, vehicle: currentState.vehicle});
+      logger.debug("[AUTO_STATE] Requested :", this.targetAutoState, "\nCurrent state :", { extended: currentState.extended, vehicle: currentState.vehicle});
     }
 
     switch (this.targetAutoState?.kind) {
@@ -246,7 +247,7 @@ export class DroneController {
           case "position_local": {
             const currPos = currentState.local?.position;
             if (!currPos) {
-              console.warn("[AUTO_STATE] No current position available for position_local check");
+              logger.warn("[AUTO_STATE] No current position available for position_local check");
               return false;
             }
 
@@ -262,7 +263,7 @@ export class DroneController {
             if (offboardTarget.yawRad !== undefined) {
               const currOrient = currentState.local?.orientation;
               if (!currOrient) {
-                console.warn("[AUTO_STATE] No current orientation available for yaw check");
+                logger.warn("[AUTO_STATE] No current orientation available for yaw check");
                 return false;
               }
 
@@ -282,7 +283,7 @@ export class DroneController {
           case "velocity_local": {
             const currVel = currentState.local?.linear;
             if (!currVel) {
-              console.warn("[AUTO_STATE] No current velocity available for velocity_local check");
+              logger.warn("[AUTO_STATE] No current velocity available for velocity_local check");
               return false;
             }
 
@@ -294,7 +295,7 @@ export class DroneController {
             return velDiff <= this.max_offboard_velocity_diff;
           }
           default:
-            console.warn("[INFO] requested state check of type 'offboardTarget.kind' not supported yet");
+            logger.warn("[INFO] requested state check of type 'offboardTarget.kind' not supported yet");
             return true;
         }
       }
@@ -316,12 +317,12 @@ export class DroneController {
     if (this.stateManagerTickRunning) return;
     this.stateManagerTickRunning = true;
 
-    console.log(`[AUTO_STATE] Tick: targetAutoState=${JSON.stringify(this.targetAutoState)}`);
+    logger.debug(`[AUTO_STATE] Tick: targetAutoState=${JSON.stringify(this.targetAutoState)}`);
 
     try {
       let currentState = this.model.getCurrentState();
       if (!DroneStateModel.isStateConnected(currentState)) {
-        console.log("[AUTO_STATE] Drone not connected, skipping tick");
+        logger.debug("[AUTO_STATE] Drone not connected, skipping tick");
         return;
       }
 
@@ -330,7 +331,7 @@ export class DroneController {
       const takingOff = DroneStateModel.isStateTakingOff(currentState);
       const onGround = currentState.extended?.landed_state === LANDED.ON_GROUND;
 
-      console.log(`[AUTO_STATE] Current state: armed=${currentState.vehicle?.armed}, mode=${currentState.vehicle?.mode}, landed=${currentState.extended?.landed_state}`);
+      logger.debug(`[AUTO_STATE] Current state: armed=${currentState.vehicle?.armed}, mode=${currentState.vehicle?.mode}, landed=${currentState.extended?.landed_state}`);
 
       switch (this.targetAutoState.kind) {
         case "landed": {
@@ -347,10 +348,10 @@ export class DroneController {
             if(this.targetAutoState.armed != currentState.vehicle?.armed) {
               // We need to change the arm state.
               if(this.targetAutoState.armed) {
-                console.log('[AUTO_STATE] Requesting drone arm');
+                logger.info('[AUTO_STATE] Requesting drone arm');
                 await this.arm();
               } else {
-                console.log('[AUTO_STATE] Requesting drone disarm');
+                logger.info('[AUTO_STATE] Requesting drone disarm');
                 await this.disarm();
               }
             }
@@ -359,10 +360,10 @@ export class DroneController {
           }
 
 
-          console.log(`[AUTO_STATE] Landed state check: landed=${landed}, onGround=${onGround}, landing=${landing}`);
+          logger.debug(`[AUTO_STATE] Landed state check: landed=${landed}, onGround=${onGround}, landing=${landing}`);
 
           if (!landing) {
-            console.log("[AUTO_STATE] vehicle not landing. Requesting land");
+            logger.info("[AUTO_STATE] vehicle not landing. Requesting land");
             await this.land();
             return
           }
@@ -373,25 +374,25 @@ export class DroneController {
           let requestedAltitude = this.targetAutoState.altMeters;
 
           if(landed) {
-            console.log("[AUTO_STATE] Processing airborne state [landed = true]. Requesting takeoff");
+            logger.info("[AUTO_STATE] Processing airborne state [landed = true]. Requesting takeoff");
             await this.takeoff(requestedAltitude);
             return;
           }
 
           if(landing) {
-            console.log("[AUTO_STATE] Processing airborne state [landing = true]. Requesting takeoff");
+            logger.info("[AUTO_STATE] Processing airborne state [landing = true]. Requesting takeoff");
             await this.takeoff(requestedAltitude);
             return;
           }
 
           if(takingOff) {
-            console.log("[AUTO_STATE] Processing airborne state [takingoff = true]. Doing nothing");
+            logger.info("[AUTO_STATE] Processing airborne state [takingoff = true]. Doing nothing");
             return;
           }
 
           if(currentState.vehicle?.mode != "AUTO.LOITER") {
             // TODO : add more checks.
-            console.log("[AUTO_STATE] airborne requested. vehicle mode not in AUTO.LOTIER mode. Setting it to AUTO.LOTIER");
+            logger.info("[AUTO_STATE] airborne requested. vehicle mode not in AUTO.LOTIER mode. Setting it to AUTO.LOTIER");
             await this.setMode("AUTO.LOITER");
           }
           
@@ -399,7 +400,7 @@ export class DroneController {
         }
       }
     } catch (e) {
-      console.log(`[AUTO_STATE] Error in tick: ${e instanceof Error ? e.message : String(e)}`);
+      logger.error(`[AUTO_STATE] Error in tick: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       this.stateManagerTickRunning = false;
     }

@@ -12,6 +12,7 @@ import type {
   MavrosMsgsAltitude,
   MavrosMsgsHomePosition,
 } from '../ros/ros-types';
+import { logger } from "../logger";
 
 /**
  * Unified drone state assembled from MAVROS topics.
@@ -269,7 +270,7 @@ export class DroneStateModel extends Emitter {
 
   /** Subscribes to required MAVROS topics via the bridge. */
   public connect(bridge: ROS2BridgeApi): void {
-    console.log('[DEBUG] DroneStateModel.connect() called');
+    logger.debug('[DEBUG] DroneStateModel.connect() called');
     this.disconnect();
     this.connectTime = Date.now();
     this.bridge = bridge;
@@ -290,23 +291,23 @@ export class DroneStateModel extends Emitter {
       { topic: DroneStateModel.T_HOME, type: 'mavros_msgs/msg/HomePosition' },
     ];
 
-    console.log('[DEBUG] Subscribing to topics:', subs);
+    logger.debug('[DEBUG] Subscribing to topics:', subs);
     subs.forEach(s => {
       const unsubscribe = this.bridge!.subscribe(s, (msg) => this.ingest({ topic: s.topic, msg }));
       this.unsubscribers.set(s.topic, unsubscribe);
     });
-    console.log('[DEBUG] DroneStateModel.connect() completed');
+    logger.debug('[DEBUG] DroneStateModel.connect() completed');
     this.startUpdateLoop();
     this.debugInterval = setInterval(() => {
       if (this.seenTopics.size < this.allTopics.size) {
         const missing = Array.from(this.allTopics).filter(t => !this.seenTopics.has(t));
-        console.log(`[DEBUG] Waiting for topics: ${missing.join(', ')}`);
+        logger.debug(`[DEBUG] Waiting for topics: ${missing.join(', ')}`);
       }
       const now = Date.now();
       if (now - this.connectTime > 10000) {
         this.buggyTopics.forEach(topic => {
           if (!this.seenTopics.has(topic)) {
-            console.error(`simulation restart might be needed, topic ${topic} is not broadcasted`);
+            logger.error(`simulation restart might be needed, topic ${topic} is not broadcasted`);
           }
         });
       }
@@ -498,7 +499,7 @@ export class DroneStateModel extends Emitter {
         this.allSeenPromise = Promise.resolve();
       }
     } else {
-      console.log('[DEBUG] No handler found for topic:', topic);
+      logger.debug('[DEBUG] No handler found for topic:', topic);
     }
   };
 
@@ -533,7 +534,7 @@ export class DroneStateModel extends Emitter {
 
   private handleVehicleState(msg: unknown) {
     if (!isState(msg)) {
-      console.log('[DEBUG] handleVehicleState: ', msg ,' msg failed isState check');
+      logger.debug('[DEBUG] handleVehicleState: ', msg ,' msg failed isState check');
       return;
     }
     const t = this.msgTimeMs(msg);
