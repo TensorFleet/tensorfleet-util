@@ -1,4 +1,5 @@
 import pino from 'pino';
+import util from 'node:util';
 
 export enum LogLevel {
   DEBUG = 'debug',
@@ -7,6 +8,8 @@ export enum LogLevel {
   ERROR = 'error',
   SILENT = 'silent'
 }
+
+type LogMethod = 'debug' | 'info' | 'warn' | 'error';
 
 export class TensorfleetLogger {
   private readonly logger: pino.Logger;
@@ -20,18 +23,6 @@ export class TensorfleetLogger {
       timestamp: pino.stdTimeFunctions.isoTime,
       formatters: {
         level: (label) => ({ level: label.toUpperCase() })
-      },
-      hooks: {
-        logMethod(args, method) {
-          if (typeof args[0] === 'string') {
-            args[0] = `[Tensorfleet][${tag}] ${args[0]}`;
-          } else if (typeof args[1] === 'string') {
-            args[1] = `[Tensorfleet][${tag}] ${args[1]}`;
-          } else {
-            args.unshift(`[Tensorfleet][${tag}]`);
-          }
-          method.apply(this, args);
-        }
       }
     });
   }
@@ -40,20 +31,42 @@ export class TensorfleetLogger {
     this.logger.level = level;
   }
 
-  debug(message: string, ...args: any[]): void {
-    this.logger.debug(message, ...args);
+  private stringify(value: unknown): string {
+    if (typeof value === 'string') {
+      return value;
+    }
+
+    return util.inspect(value, {
+      depth: null,
+      colors: false,
+      breakLength: Infinity,
+      compact: true
+    });
   }
 
-  info(message: string, ...args: any[]): void {
-    this.logger.info(message, ...args);
+  private buildMessage(message: string, args: unknown[]): string {
+    const parts = [message, ...args.map((arg) => this.stringify(arg))];
+    return `[Tensorfleet][${this.tag}] ${parts.join(' ')}`;
   }
 
-  warn(message: string, ...args: any[]): void {
-    this.logger.warn(message, ...args);
+  private log(level: LogMethod, message: string, ...args: unknown[]): void {
+    this.logger[level](this.buildMessage(message, args));
   }
 
-  error(message: string, ...args: any[]): void {
-    this.logger.error(message, ...args);
+  debug(message: string, ...args: unknown[]): void {
+    this.log('debug', message, ...args);
+  }
+
+  info(message: string, ...args: unknown[]): void {
+    this.log('info', message, ...args);
+  }
+
+  warn(message: string, ...args: unknown[]): void {
+    this.log('warn', message, ...args);
+  }
+
+  error(message: string, ...args: unknown[]): void {
+    this.log('error', message, ...args);
   }
 }
 
