@@ -50,6 +50,9 @@ export interface ROS2BridgeApi {
   getTopicType(topic: string): string | undefined;
   getAvailableImageTopics(): Subscription[];
 
+  /** Service discovery & helpers */
+  getAvailableServices(): Array<{ service: string; type: string }>;
+
   /** Generic service call API (Foxglove-backed) */
   callService<T = any>(name: string, request: any): Promise<T>;
 
