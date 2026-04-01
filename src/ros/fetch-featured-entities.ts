@@ -54,7 +54,7 @@ export class EntityCardDataImpl implements EntityData {
     };
     
     // Send message to parent window for external module communication
-    window.parent.postMessage(message, '*');
+    globalThis.parent.postMessage(message, '*');
     
     // Log for debugging
     logger.debug(`EntityCardDataImpl: Card clicked - ${this.name}`, message);
@@ -72,7 +72,7 @@ export class EntityCardDataImpl implements EntityData {
       payload: popupData,
     };
     
-    window.parent.postMessage(message, '*');
+    globalThis.parent.postMessage(message, '*');
     
     // Also send card info click message
     const clickMessage = {
@@ -83,7 +83,7 @@ export class EntityCardDataImpl implements EntityData {
       },
     };
     
-    window.parent.postMessage(clickMessage, '*');
+    globalThis.parent.postMessage(clickMessage, '*');
     logger.debug(`EntityCardDataImpl: Info button clicked - ${this.name}`, message);
   }
 }
