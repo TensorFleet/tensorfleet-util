@@ -5,4 +5,5 @@ export * from './ros/ros-bridge-api';
 export * from './ros/ros-types';
 export * from './ros/fetch-featured-entities';
 export * from './config/vm-config';
+export * from './config/config-store';
 export * from './logger';
