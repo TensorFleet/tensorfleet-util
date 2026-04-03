@@ -4,19 +4,7 @@
 
 import type { ROS2BridgeApi } from "./ros-bridge-api";
 import { logger } from "../logger";
-
-/**
- * Data type representing an entity card with predefined callbacks
- */
-export interface EntityData {
-  name: string;
-  type: string;
-  target: string;
-  params: Record<string, unknown>;
-  getModelNames(): string[];
-  onCardClick(): void;
-  onInfoClick(): void;
-}
+import type { EntityData } from "../entity/entity-api";
 
 /**
  * Data type representing a featured entity card.

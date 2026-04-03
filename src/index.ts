@@ -1,4 +1,5 @@
 // Export everything from tensorfleet-util
+export * from './entity/entity-api';
 export * from './entity/entity-state-model';
 export * from './drone/drone-state-model';
 export * from './drone/mission-control/drone-controller';
