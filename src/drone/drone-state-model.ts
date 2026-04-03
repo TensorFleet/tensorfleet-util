@@ -13,37 +13,15 @@ import type {
   MavrosMsgsHomePosition,
 } from '../ros/ros-types';
 import { logger } from "../logger";
+import type { EntityState } from '../entity/entity-state-model';
+import { EntityStateModel } from '../entity/entity-state-model';
 
 /**
  * Unified drone state assembled from MAVROS topics.
- * Includes vehicle state, telemetry, and basic health assessment.
+ * Extends EntityState with vehicle-specific properties like connection status,
+ * battery, extended state, IMU data, and health assessment.
  */
-export type DroneState = {
-  local_position_ned?: {
-    time_boot_ms: number;
-    x: number; y: number; z: number;
-    vx: number; vy: number; vz: number;
-  };
-
-  attitude?: {
-    time_boot_ms: number;
-    roll: number; pitch: number; yaw: number;
-    rollspeed: number; pitchspeed: number; yawspeed: number;
-  };
-
-  rotation?: { x: number; y: number; z: number; w: number };
-
-  /** Yaw (rad), NED (0 = North, +CW toward East). */
-  yaw?: number;
-
-  global_position_int?: {
-    time_boot_ms: number;
-    lat: number; lon: number; alt: number;
-    relative_alt: number;
-    vx: number; vy: number; vz: number;
-    hdg: number; // deg
-  };
-
+export type DroneState = EntityState & {
   /** Connection/mode/arming state. */
   vehicle?: {
     time_boot_ms: number;
@@ -69,41 +47,6 @@ export type DroneState = {
     voltage?: number;
     current?: number;
     temperature?: number | null;
-  };
-
-  /** Local pose/velocity in ENU. */
-  local?: {
-    time_boot_ms: number;
-    position: { x: number; y: number; z: number };
-    orientation: { x: number; y: number; z: number; w: number };
-    linear: { x: number; y: number; z: number };
-    angular: { x: number; y: number; z: number };
-  };
-
-  /** IMU data. */
-  imu?: {
-    time_boot_ms: number;
-    orientation: { x: number; y: number; z: number; w: number };
-    angular_velocity: { x: number; y: number; z: number };
-    linear_acceleration: { x: number; y: number; z: number };
-  };
-
-  /** Altitude breakdown. */
-  altitude?: {
-    time_boot_ms: number;
-    amsl?: number;
-    agl?: number;
-    local?: number;
-    relative?: number;
-    terrain?: number;
-    bottom_clearance?: number;
-  };
-
-  /** Home position. */
-  home?: {
-    time_boot_ms: number;
-    lat: number; lon: number; alt: number;
-    orientation?: { x: number; y: number; z: number; w: number };
   };
 
   /**
@@ -152,19 +95,19 @@ export const LANDED = {
   LANDING: 4,
 } as const;
 
-/** Minimal event emitter for model updates. */
-class Emitter {
-  private listeners = new Map<keyof EventMap, Set<Function>>();
+/** Minimal event emitter mixin for model updates. */
+abstract class EventEmitter extends EntityStateModel {
+  private eventListeners = new Map<keyof EventMap, Set<Function>>();
   on<K extends keyof EventMap>(event: K, cb: EventMap[K]) {
-    if (!this.listeners.has(event)) this.listeners.set(event, new Set());
-    this.listeners.get(event)!.add(cb as any);
+    if (!this.eventListeners.has(event)) this.eventListeners.set(event, new Set());
+    this.eventListeners.get(event)!.add(cb as any);
     return () => this.off(event, cb);
   }
   off<K extends keyof EventMap>(event: K, cb: EventMap[K]) {
-    this.listeners.get(event)?.delete(cb as any);
+    this.eventListeners.get(event)?.delete(cb as any);
   }
   emit<K extends keyof EventMap>(event: K, ...args: Parameters<EventMap[K]>) {
-    this.listeners.get(event)?.forEach(fn => { try { (fn as any)(...args); } catch {} });
+    this.eventListeners.get(event)?.forEach(fn => { try { (fn as any)(...args); } catch {} });
   }
 }
 
@@ -190,11 +133,13 @@ type HasHeaderStamp = { header?: { stamp?: RosStamp } };
 /**
  * Maintains a unified drone state from MAVROS topics.
  * No heartbeat or parameter setting is performed here.
+ * Extends EntityStateModel for spatial state management and EventEmitter for event handling.
  */
-export class DroneStateModel extends Emitter {
+export class DroneStateModel extends EventEmitter {
   public id: string;
 
-  private state: Partial<DroneState> = {};
+  // Override the protected state from EntityStateModel with DroneState type
+  protected override state: Partial<DroneState> = {};
   private updateListeners = new Set<DroneStateUpdateListener>();
   private statusUpdateListeners = new Set<DroneStateUpdateListener>();
   private sectionChangeListeners = new Map<keyof DroneState, Set<SectionChangeListener>>();
@@ -365,7 +310,7 @@ export class DroneStateModel extends Emitter {
     return { ...this.state };
   }
 
-  /** Non async state  */
+  /** Non async state */
   public getCurrentState(): DroneState {
     return {...this.state};
   }
