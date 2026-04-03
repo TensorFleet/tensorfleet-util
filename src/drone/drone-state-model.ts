@@ -230,7 +230,8 @@ export class DroneStateModel extends EventEmitter {
   }
 
   /** Subscribes to required MAVROS topics via the bridge. */
-  public connect(bridge: ROS2BridgeApi): void {
+  public override connect(source: unknown): void {
+    const bridge = source as ROS2BridgeApi;
     logger.debug('[DEBUG] DroneStateModel.connect() called');
     this.disconnect();
     this.connectTime = Date.now();

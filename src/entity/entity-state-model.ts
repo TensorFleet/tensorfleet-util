@@ -270,4 +270,15 @@ export class EntityStateModel {
   public getVerticalSpeed(): number {
     return this.state.local?.linear?.z ?? 0;
   }
+
+  /**
+   * Connects to a data source (e.g., ROS bridge, simulator, etc.).
+   * Subclasses should override this method to establish connections
+   * to their specific data sources.
+   * @param source The data source to connect to (type varies by subclass)
+   */
+  public connect(source: unknown): void {
+    // Default implementation does nothing
+    // Subclasses should override to establish their specific connections
+  }
 }
