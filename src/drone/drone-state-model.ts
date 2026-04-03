@@ -163,17 +163,20 @@ export class DroneStateModel extends EventEmitter {
   private buggyTopics: string[] = [];
   private connectTime: number = 0;
 
-  // Topics
-  private static readonly T_FIX = '/mavros/global_position/raw/fix';
-  private static readonly T_HDG = '/mavros/global_position/compass_hdg';
-  private static readonly T_STATE = '/mavros/state';
-  private static readonly T_EXT_STATE = '/mavros/extended_state';
-  private static readonly T_BATT = '/mavros/battery';
-  private static readonly T_POSE = '/mavros/local_position/pose';
-  private static readonly T_VEL = '/mavros/local_position/velocity_local';
-  private static readonly T_IMU = '/mavros/imu/data';
-  private static readonly T_ALT = '/mavros/altitude';
-  private static readonly T_HOME = '/mavros/home_position/home';
+  // MAVROS node base name (configurable)
+  private readonly baseMavrosNode: string;
+
+  // Topics (derived from baseMavrosNode)
+  private readonly T_FIX: string;
+  private readonly T_HDG: string;
+  private readonly T_STATE: string;
+  private readonly T_EXT_STATE: string;
+  private readonly T_BATT: string;
+  private readonly T_POSE: string;
+  private readonly T_VEL: string;
+  private readonly T_IMU: string;
+  private readonly T_ALT: string;
+  private readonly T_HOME: string;
 
   private handlers: Record<string, (msg: any) => void>;
 
@@ -191,26 +194,39 @@ export class DroneStateModel extends EventEmitter {
     return null;
   }
 
-  constructor(updateFps = 10) {
+  constructor(updateFps = 10, baseMavrosNode = 'mavros') {
     super();
     this.id = Math.random().toString(36).slice(2);
     this.updateFps = updateFps;
+    this.baseMavrosNode = baseMavrosNode;
+
+    // Initialize topic paths from baseMavrosNode
+    this.T_FIX = `/${this.baseMavrosNode}/global_position/raw/fix`;
+    this.T_HDG = `/${this.baseMavrosNode}/global_position/compass_hdg`;
+    this.T_STATE = `/${this.baseMavrosNode}/state`;
+    this.T_EXT_STATE = `/${this.baseMavrosNode}/extended_state`;
+    this.T_BATT = `/${this.baseMavrosNode}/battery`;
+    this.T_POSE = `/${this.baseMavrosNode}/local_position/pose`;
+    this.T_VEL = `/${this.baseMavrosNode}/local_position/velocity_local`;
+    this.T_IMU = `/${this.baseMavrosNode}/imu/data`;
+    this.T_ALT = `/${this.baseMavrosNode}/altitude`;
+    this.T_HOME = `/${this.baseMavrosNode}/home_position/home`;
 
     this.handlers = {
-      [DroneStateModel.T_FIX]: this.handleGlobalFix,
-      [DroneStateModel.T_HDG]: this.handleCompassHdg,
-      [DroneStateModel.T_STATE]: this.handleVehicleState,
-      [DroneStateModel.T_EXT_STATE]: this.handleExtendedState,
-      [DroneStateModel.T_BATT]: this.handleBattery,
-      [DroneStateModel.T_POSE]: this.handleLocalPose,
-      [DroneStateModel.T_VEL]: this.handleLocalVelocity,
-      [DroneStateModel.T_IMU]: this.handleImu,
-      [DroneStateModel.T_ALT]: this.handleAltitude,
-      [DroneStateModel.T_HOME]: this.handleHomePosition,
+      [this.T_FIX]: this.handleGlobalFix,
+      [this.T_HDG]: this.handleCompassHdg,
+      [this.T_STATE]: this.handleVehicleState,
+      [this.T_EXT_STATE]: this.handleExtendedState,
+      [this.T_BATT]: this.handleBattery,
+      [this.T_POSE]: this.handleLocalPose,
+      [this.T_VEL]: this.handleLocalVelocity,
+      [this.T_IMU]: this.handleImu,
+      [this.T_ALT]: this.handleAltitude,
+      [this.T_HOME]: this.handleHomePosition,
     };
 
     this.allTopics = new Set(Object.keys(this.handlers));
-    this.buggyTopics = [DroneStateModel.T_BATT];
+    this.buggyTopics = [this.T_BATT];
   }
 
   /** Subscribes to required MAVROS topics via the bridge. */
@@ -224,16 +240,16 @@ export class DroneStateModel extends EventEmitter {
     this.allSeenPromise = new Promise(resolve => this.resolveAllSeen = resolve);
 
     const subs: Array<{ topic: string; type: string }> = [
-      { topic: DroneStateModel.T_FIX, type: 'sensor_msgs/msg/NavSatFix' },
-      { topic: DroneStateModel.T_HDG, type: 'std_msgs/msg/Float64' },
-      { topic: DroneStateModel.T_STATE, type: 'mavros_msgs/msg/State' },
-      { topic: DroneStateModel.T_EXT_STATE, type: 'mavros_msgs/msg/ExtendedState' },
-      { topic: DroneStateModel.T_BATT, type: 'sensor_msgs/msg/BatteryState' },
-      { topic: DroneStateModel.T_POSE, type: 'geometry_msgs/msg/PoseStamped' },
-      { topic: DroneStateModel.T_VEL, type: 'geometry_msgs/msg/TwistStamped' },
-      { topic: DroneStateModel.T_IMU, type: 'sensor_msgs/msg/Imu' },
-      { topic: DroneStateModel.T_ALT, type: 'mavros_msgs/msg/Altitude' },
-      { topic: DroneStateModel.T_HOME, type: 'mavros_msgs/msg/HomePosition' },
+      { topic: this.T_FIX, type: 'sensor_msgs/msg/NavSatFix' },
+      { topic: this.T_HDG, type: 'std_msgs/msg/Float64' },
+      { topic: this.T_STATE, type: 'mavros_msgs/msg/State' },
+      { topic: this.T_EXT_STATE, type: 'mavros_msgs/msg/ExtendedState' },
+      { topic: this.T_BATT, type: 'sensor_msgs/msg/BatteryState' },
+      { topic: this.T_POSE, type: 'geometry_msgs/msg/PoseStamped' },
+      { topic: this.T_VEL, type: 'geometry_msgs/msg/TwistStamped' },
+      { topic: this.T_IMU, type: 'sensor_msgs/msg/Imu' },
+      { topic: this.T_ALT, type: 'mavros_msgs/msg/Altitude' },
+      { topic: this.T_HOME, type: 'mavros_msgs/msg/HomePosition' },
     ];
 
     logger.debug('[DEBUG] Subscribing to topics:', subs);
@@ -337,18 +353,18 @@ export class DroneStateModel extends EventEmitter {
 
 
   public async isArmed(): Promise<boolean> {
-    await this.waitForTopics([DroneStateModel.T_STATE]);
+    await this.waitForTopics([this.T_STATE]);
     return DroneStateModel.isStateArmed(this.state);
   }
 
   public async isTakingOff(): Promise<boolean> {
-    await this.waitForTopics([DroneStateModel.T_STATE]);
+    await this.waitForTopics([this.T_STATE]);
 
     return DroneStateModel.isStateTakingOff(this.state);
   }
 
   public async isLanding(): Promise<boolean> {
-    await this.waitForTopics([DroneStateModel.T_EXT_STATE]);
+    await this.waitForTopics([this.T_EXT_STATE]);
 
     return DroneStateModel.isStateLanding(this.state);
   }
@@ -357,18 +373,18 @@ export class DroneStateModel extends EventEmitter {
    * Checks whether the drone is disarmed or is on ground.
    */
   public async isLanded(): Promise<boolean> {
-    await this.waitForTopics([DroneStateModel.T_STATE, DroneStateModel.T_EXT_STATE]);
+    await this.waitForTopics([this.T_STATE, this.T_EXT_STATE]);
 
     return DroneStateModel.isStateLanded(this.state);
   }
 
   public async isOffboard(): Promise<boolean> {
-    await this.waitForTopics([DroneStateModel.T_STATE]);
+    await this.waitForTopics([this.T_STATE]);
     return DroneStateModel.isStateOffboard(this.state);
   }
 
   public async isAirborne(): Promise<boolean> {
-    await this.waitForTopics([DroneStateModel.T_STATE, DroneStateModel.T_EXT_STATE]);
+    await this.waitForTopics([this.T_STATE, this.T_EXT_STATE]);
     return DroneStateModel.isStateAirborne(this.state);
   }
 
@@ -787,7 +803,7 @@ export class DroneStateModel extends EventEmitter {
     const seen = (t: string) => (now - (this.lastSeen[t] || 0)) <= maxStaleMs;
 
     // Determine a reliable landed-state indication for status (do not overwrite extended.landed_state).
-    const extSeenMs = now - (this.lastSeen[DroneStateModel.T_EXT_STATE] || 0);
+    const extSeenMs = now - (this.lastSeen[this.T_EXT_STATE] || 0);
     const extFresh = extSeenMs <= 1000;
     let landedEff = extFresh ? this.state.extended?.landed_state : undefined;
 
@@ -802,8 +818,8 @@ export class DroneStateModel extends EventEmitter {
 
     const faults: string[] = [];
     if (!gcs) faults.push('vehicle.link.down');
-    if (!seen(DroneStateModel.T_IMU)) faults.push('imu.stale');
-    if (!seen(DroneStateModel.T_FIX)) faults.push('gps.stale');
+    if (!seen(this.T_IMU)) faults.push('imu.stale');
+    if (!seen(this.T_FIX)) faults.push('gps.stale');
 
     const pct = this.state.battery?.percentage;
     const v = this.state.battery?.voltage;
@@ -820,11 +836,11 @@ export class DroneStateModel extends EventEmitter {
       armable = false;
       arm_reasons.push('link.down');
     }
-    if (!seen(DroneStateModel.T_IMU)) {
+    if (!seen(this.T_IMU)) {
       armable = false;
       arm_reasons.push('imu.stale');
     }
-    if (!seen(DroneStateModel.T_FIX)) {
+    if (!seen(this.T_FIX)) {
       armable = false;
       arm_reasons.push('gps.stale');
     }
