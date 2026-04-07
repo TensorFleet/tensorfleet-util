@@ -1,5 +1,4 @@
 import pino from 'pino';
-import util from 'node:util';
 
 export enum LogLevel {
   DEBUG = 'debug',
@@ -36,12 +35,35 @@ export class TensorfleetLogger {
       return value;
     }
 
-    return util.inspect(value, {
-      depth: null,
-      colors: false,
-      breakLength: Infinity,
-      compact: true
-    });
+    try {
+      return JSON.stringify(value, (key, val) => {
+        // Handle circular references and special types
+        if (val == null) return null;
+        if (typeof val === 'undefined') return 'undefined';
+        if (typeof val === 'function') return `[Function: ${val.name || 'anonymous'}]`;
+        if (typeof val === 'symbol') return val.toString();
+        if (val instanceof Map) return `{Map(${val.size})}`;
+        if (val instanceof Set) return `{Set(${val.size})}`;
+        if (val instanceof Error) return val.toString();
+        // Handle objects with custom inspect/toJSON
+        if (val && typeof val === 'object') {
+          if (typeof (val as any).toJSON === 'function') {
+            return (val as any).toJSON();
+          }
+          if (typeof (val as any).inspect === 'function') {
+            return (val as any).inspect();
+          }
+        }
+        return val;
+      }, 2);
+    } catch {
+      // Fallback for objects that can't be stringified (e.g., DOM elements, complex objects)
+      if (value === null) return 'null';
+      if (value === undefined) return 'undefined';
+      if (typeof value === 'function') return `[Function: ${(value as Function).name || 'anonymous'}]`;
+      if (typeof value === 'symbol') return value.toString();
+      return `[${typeof value}]`;
+    }
   }
 
   private buildMessage(message: string, args: unknown[]): string {
