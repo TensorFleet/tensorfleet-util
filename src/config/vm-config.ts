@@ -1,10 +1,3 @@
-/**
- * VM Configuration types and utilities
- * Extracted from vm-manager.ts for reuse in standalone panels
- */
-
-import { logger } from "../logger";
-
 // VM Configuration types
 export interface VMConfig {
   id: string;
@@ -24,7 +17,6 @@ export interface VMConfigOption {
   config: VMConfig;
 }
 
-// Static VM configuration constants
 export const VM_CONFIGS: Record<string, VMConfig> = {
   'px4': {
     id: 'px4',
@@ -32,8 +24,18 @@ export const VM_CONFIGS: Record<string, VMConfig> = {
     description: 'PX4 flight stack with Gazebo simulation',
     sim_config: {
       config_version: "0.0.1",
-      world_components: "static_bodies_01",
+      world_components: "static_obstacles_01;static_ground",
       gazebo_px4_enabled: "true"
+    }
+  },
+  'ardupilot': {
+    id: 'ardupilot',
+    name: 'ArduPilot',
+    description: 'ArduPilot flight stack with Gazebo simulation',
+    sim_config: {
+      config_version: "0.0.1",
+      world_components: "static_obstacles_01;static_ground",
+      gazebo_ardupilot_enabled: "true"
     }
   },
   'simple_robot': {
@@ -42,7 +44,7 @@ export const VM_CONFIGS: Record<string, VMConfig> = {
     description: 'Basic ground robot with Gazebo simulation',
     sim_config: {
       config_version: "0.0.1",
-      world_components: "static_bodies_01;simple_bot_include",
+      world_components: "static_obstacles_01;static_ground",
       simple_robot_enabled: "true"
     }
   },
@@ -52,7 +54,7 @@ export const VM_CONFIGS: Record<string, VMConfig> = {
     description: 'Basic robotics arm simulation',
     sim_config: {
       config_version: "0.0.1",
-      world_components: "lerobot/lerobot_world_01",
+      world_components: "lerobot/lerobot_world_01;static_ground",
       gazebo_lerobot_enabled: "true"
     }
   },
@@ -74,7 +76,10 @@ export const TEMPLATE_TO_CONFIG_ID: Record<string, string> = {
  * @param workspaceFolders - Array of workspace folders to check
  * @returns Promise resolving to detected config or null if not found
  */
-export async function detectConfigFromWorkspace(workspaceFolders: readonly { uri: { fsPath: string } }[]): Promise<{ configId: string; template: string } | null> {
+export async function detectConfigFromWorkspace(
+  workspaceFolders: readonly { uri: { fsPath: string } }[],
+  readFileContent: (filePath: string) => Promise<string | null>
+): Promise<{ configId: string; template: string } | null> {
   if (!workspaceFolders || workspaceFolders.length === 0) {
     return null;
   }
@@ -82,8 +87,7 @@ export async function detectConfigFromWorkspace(workspaceFolders: readonly { uri
   for (const folder of workspaceFolders) {
     const markerPath = `${folder.uri.fsPath}/.tensorfleet`;
     try {
-      // Read file content
-      const content = await fetchFileContent(markerPath);
+      const content = await readFileContent(markerPath);
       if (!content) {
         continue;
       }
@@ -113,7 +117,6 @@ export function getDefaultConfig(): VMConfig {
     const firstConfigId = Object.keys(VM_CONFIGS)[0];
     const fallbackConfig = VM_CONFIGS[firstConfigId];
     if (fallbackConfig) {
-      logger.warn(`Warning: Default config '${DEFAULT_CONFIG_ID}' not found, using '${firstConfigId}'`);
       return fallbackConfig;
     }
     throw new Error('No VM configurations available');
@@ -154,16 +157,4 @@ export function isValidConfigId(configId?: string): configId is string {
  */
 export function getConfigIdForTemplate(template: string): string | undefined {
   return TEMPLATE_TO_CONFIG_ID[template];
-}
-
-// Helper function to read file content (browser environment compatible)
-async function fetchFileContent(filePath: string): Promise<string | null> {
-  try {
-    // In a browser environment, we would need to use a different approach
-    // For now, this is a placeholder that would need to be implemented
-    // based on the specific environment and file access capabilities
-    throw new Error('File access not implemented in this environment');
-  } catch (error) {
-    return null;
-  }
 }
