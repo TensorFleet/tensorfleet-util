@@ -10,6 +10,22 @@ export interface Subscription {
 export type MessageHandler = (message: any) => void;
 export type UnsubscribeFn = () => void;
 export type TopicsChangedHandler = (topics: Subscription[]) => void;
+export type ServiceInfo = { service: string; type: string };
+export type ServicesChangedHandler = (services: ServiceInfo[]) => void;
+
+export type TfEdgeSnapshot = {
+  parentFrame: string;
+  childFrame: string;
+  topic: string;
+  lastMessageAt: number;
+  isStatic: boolean;
+};
+
+export type TfGraphSnapshot = {
+  dynamicEdges: TfEdgeSnapshot[];
+  staticEdges: TfEdgeSnapshot[];
+  lastUpdatedAt: number | null;
+};
 
 export interface ROS2BridgeApi {
   isConnected(): boolean;
@@ -51,15 +67,18 @@ export interface ROS2BridgeApi {
   getAvailableImageTopics(): Subscription[];
 
   /** Service discovery & helpers */
-  getAvailableServices(): Array<{ service: string; type: string }>;
+  getAvailableServices(): ServiceInfo[];
 
   /** Generic service call API (Foxglove-backed) */
-  callService<T = any>(name: string, request: any): Promise<T>;
+  callService<T = any>(name: string, request: any, opts?: { timeoutMs?: number }): Promise<T>;
 
   /** Frame/introspection helpers */
   getKnownFrames(): string[];
+  getKnownTfFrames(): string[];
   getFrameSources(frameId: string): string[];
+  getTfGraphSnapshot(): TfGraphSnapshot;
 
   /** Available-topics change listener (returns callable unsubscribe) */
   onAvailableTopicsChanged(cb: TopicsChangedHandler): UnsubscribeFn;
+  onAvailableServicesChanged(cb: ServicesChangedHandler): UnsubscribeFn;
 }
