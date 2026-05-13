@@ -6,8 +6,4 @@ export * from './drone/mission-control/drone-controller';
 export * from './ros/ros-bridge-api';
 export * from './ros/ros-types';
 export * from './ros/fetch-featured-entities';
-export * from './config/vm-config';
-export * from './config/server-config';
-export * from './config/vm-manager-client';
-export * from './config/config-store';
 export * from './logger';
