@@ -113,6 +113,20 @@ export class DroneController {
     this.startAutoStateLoop();
   }
 
+  dispose(): void {
+    if (this.offboardInterval !== null) {
+      clearInterval(this.offboardInterval);
+      this.offboardInterval = null;
+    }
+
+    if (this.stateManagerInterval !== null) {
+      clearInterval(this.stateManagerInterval);
+      this.stateManagerInterval = null;
+    }
+
+    this._targetAutoState = null;
+  }
+
   // -------- Basic services --------
 
   async arm(): Promise<void> {
