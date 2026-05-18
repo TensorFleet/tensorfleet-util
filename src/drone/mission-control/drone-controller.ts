@@ -12,6 +12,7 @@ import { DroneStateModel, LANDED } from "../drone-state-model";
 import type { ROS2BridgeApi } from "../../ros/ros-bridge-api";
 import { logger } from "../../logger";
 import deepEqual from "fast-deep-equal";
+import typia from "typia";
 
 export enum LandedState {
   UNDEFINED = 0,
@@ -47,6 +48,28 @@ export type OffboardTarget =
       body_rate?: { x: number; y: number; z: number };
       thrust?: number;
     }
+
+const _validateTargetAutoState = typia.createValidate<TargetAutoState>();
+
+export function validateTargetAutoState(
+    input: unknown,
+): typia.IValidation<TargetAutoState> {
+  return _validateTargetAutoState(input);
+}
+
+export function assertTargetAutoState(input: unknown): TargetAutoState {
+  const result = validateTargetAutoState(input);
+
+  if (result.success) {
+    return result.data;
+  }
+
+  throw new Error(
+      result.errors
+          .map((e) => `${e.path}: expected ${e.expected}, got ${JSON.stringify(e.value)}`)
+          .join("\n"),
+  );
+}
 
 export interface DroneControllerOptions {
   localFrameId?: string;                // default "map"
@@ -142,7 +165,7 @@ export class DroneController {
     // Workaround. arm might fail due to unsupported state for arm.
     if (await this.model.isLanded()) {
       logger.info("[DRONE_CONTROLLER] Is in landed state while trying to arm. Switching vehicle mode to AUTO.LOITER");
-      await this.setMode("AUTO.LOITER");  
+      await this.setMode("AUTO.LOITER");
     }
 
     const result = await this.mavrosArmDisarm(true);
@@ -210,15 +233,16 @@ export class DroneController {
   // -------- Requested state / auto state management --------
 
   public async requestAutoState(state: TargetAutoState): Promise<void> {
-    this._targetAutoState = structuredClone(state);
+    const targetState = assertTargetAutoState(state);
+    this._targetAutoState = structuredClone(targetState);
 
-    if(state) {
+    if(targetState) {
       await this._tickAutoState();
-      while(deepEqual(this._targetAutoState,state) && !this.isInRequestedAutoState()) {
+      while(deepEqual(this._targetAutoState,targetState) && !this.isInRequestedAutoState()) {
         await this.sleep(100);
       }
 
-      logger.info("[DRONE_CONTROLLER] Target auto state reached:\n", state);
+      logger.info("[DRONE_CONTROLLER] Target auto state reached:\n", targetState);
     } else {
       logger.info("[DRONE_CONTROLLER] Target auto state cleared");
     }

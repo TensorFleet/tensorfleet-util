@@ -6,11 +6,21 @@
     "strict": true,
     "skipLibCheck": true,
     "sourceMap": true,
-
     "rootDir": "./src",
     "outDir": "./dist",
-    "declaration": true
+    "declaration": true,
+    "plugins": [
+      {
+        "transform": "typia/lib/transform"
+      }
+    ],
+    "strictNullChecks": true
   },
-  "include": ["src"],
-  "exclude": ["dist", "node_modules"]
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules"
+  ]
 }
