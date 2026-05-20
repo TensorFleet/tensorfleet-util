@@ -1,5 +1,5 @@
 // drone-state-model.ts
-import { ROS2BridgeApi, UnsubscribeFn } from '../ros/ros-bridge-api';
+import type { MessageHandler, ROS2BridgeApi, UnsubscribeFn } from '../ros/ros-bridge-api.js';
 import type {
   SensorMsgsNavSatFix,
   StdMsgsFloat64,
@@ -11,10 +11,10 @@ import type {
   SensorMsgsImu,
   MavrosMsgsAltitude,
   MavrosMsgsHomePosition,
-} from '../ros/ros-types';
-import { logger } from "../logger";
-import type { EntityState } from '../entity/entity-state-model';
-import { EntityStateModel } from '../entity/entity-state-model';
+} from '../ros/ros-types.js';
+import { logger } from "../logger.js";
+import type { EntityState } from '../entity/entity-state-model.js';
+import { EntityStateModel } from '../entity/entity-state-model.js';
 
 /**
  * Unified drone state assembled from MAVROS topics.
@@ -139,7 +139,7 @@ export class DroneStateModel extends EventEmitter {
   public id: string;
 
   // Override the protected state from EntityStateModel with DroneState type
-  protected override state: Partial<DroneState> = {};
+  protected state: Partial<DroneState> = {};
   private updateListeners = new Set<DroneStateUpdateListener>();
   private statusUpdateListeners = new Set<DroneStateUpdateListener>();
   private sectionChangeListeners = new Map<keyof DroneState, Set<SectionChangeListener>>();
@@ -230,7 +230,7 @@ export class DroneStateModel extends EventEmitter {
   }
 
   /** Subscribes to required MAVROS topics via the bridge. */
-  public override connect(source: unknown): void {
+  public connect(source: unknown): void {
     const bridge = source as ROS2BridgeApi;
     logger.debug('[DEBUG] DroneStateModel.connect() called');
     this.disconnect();
@@ -255,7 +255,7 @@ export class DroneStateModel extends EventEmitter {
 
     logger.debug('[DEBUG] Subscribing to topics:', subs);
     subs.forEach(s => {
-      const unsubscribe = this.bridge!.subscribe(s, (msg) => this.ingest({ topic: s.topic, msg }));
+      const unsubscribe = this.bridge!.subscribe(s, ((msg) => this.ingest({ topic: s.topic, msg })) as MessageHandler);
       this.unsubscribers.set(s.topic, unsubscribe);
     });
     logger.debug('[DEBUG] DroneStateModel.connect() completed');

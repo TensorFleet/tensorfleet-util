@@ -2,9 +2,6 @@
   "name": "tensorfleet-util",
   "version": "1.0.0",
   "description": "TensorFleet utilities for drone control and ROS integration",
-  "main": "./dist/index.js",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "type": "module",
   "license": "GPL-3.0",
   "repository": {
@@ -17,33 +14,40 @@
     "tensorfleet",
     "mavros"
   ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./*": {
       "types": "./dist/*.d.ts",
-      "import": "./dist/*.js"
+      "import": "./dist/*.js",
+      "default": "./dist/*.js"
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "package.json",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "npm run build",
-    "prepare": "ts-patch install"
-  },
-  "devDependencies": {
-    "@types/node": "^20.0.0",
-    "ts-patch": "^4.0.1",
-    "ttypescript": "^1.5.15",
-    "typescript": "^6.0.3"
+    "clean": "rm -rf dist .typia-build",
+    "build": "bun run clean && typia generate --input src --output .typia-build --project tsconfig.json && tsc -p tsconfig.build.json",
+    "prepack": "bun run build",
+    "prepublishOnly": "bun run build"
   },
   "dependencies": {
     "fast-deep-equal": "^3.1.3",
-    "pino": "^10.3.1",
-    "typia": "^12.1.1"
+    "pino": "^10.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typia": "^12.1.1",
+    "typescript": "^6.0.3"
   }
 }

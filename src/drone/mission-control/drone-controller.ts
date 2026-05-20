@@ -7,10 +7,10 @@
  *  - Requested/target state with optional automatic enforcement (tick every second)
  */
 
-import * as RosTypes from "../../ros/ros-types"
-import { DroneStateModel, LANDED } from "../drone-state-model";
-import type { ROS2BridgeApi } from "../../ros/ros-bridge-api";
-import { logger } from "../../logger";
+import * as RosTypes from "../../ros/ros-types.js"
+import { DroneStateModel, LANDED, type DroneState } from "../drone-state-model.js";
+import type { ROS2BridgeApi } from "../../ros/ros-bridge-api.js";
+import { logger } from "../../logger.js";
 import deepEqual from "fast-deep-equal";
 import typia from "typia";
 
@@ -128,7 +128,7 @@ export class DroneController {
       stateManagementIntervalMs: opts.stateManagementIntervalMs ?? 1000,
     };
 
-    this.model.onUpdate((s) => { this.latestState = s; });
+    this.model.onUpdate((s: Partial<DroneState>) => { this.latestState = s; });
   }
 
   async initialize(): Promise<void> {
