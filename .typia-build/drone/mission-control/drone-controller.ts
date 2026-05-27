@@ -509,6 +509,7 @@ export class DroneController {
         const targetState = assertTargetAutoState(state);
         this._targetAutoState = structuredClone(targetState);
         if (targetState) {
+            await this.waitForStateReady();
             await this._tickAutoState();
             while (deepEqual(this._targetAutoState, targetState) && !this.isInRequestedAutoState()) {
                 await this.sleep(100);
@@ -519,11 +520,25 @@ export class DroneController {
             logger.info("[DRONE_CONTROLLER] Target auto state cleared");
         }
     }
+    private async waitForStateReady(timeoutMs = 5000): Promise<void> {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+            const state = await this.model.getState();
+            if (state.vehicle?.connected === true && state.extended?.landed_state != null) {
+                return;
+            }
+            await this.sleep(100);
+        }
+        throw new Error("Timed out waiting for drone telemetry before setting autopilot state");
+    }
     public clearAutoState(): void {
         this.requestAutoState(null);
     }
     public isInRequestedAutoState(debug: boolean = false): boolean {
         let currentState = this.model.getCurrentState();
+        if (!currentState.vehicle || currentState.vehicle.connected !== true) {
+            return false;
+        }
         const landed = DroneStateModel.isStateLanded(currentState);
         const landing = DroneStateModel.isStateLanding(currentState);
         const takingOff = DroneStateModel.isStateTakingOff(currentState);
