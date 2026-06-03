@@ -367,16 +367,18 @@ export class DroneController {
     }, this.opts.stateManagementIntervalMs);
   }
 
-  private async _tickAutoState(): Promise<void> {
-    if (!this.targetAutoState) return;
-    if (this.targetAutoState.kind === "offboard") {
+  private async _tickAutoState(targetOverride?: TargetAutoState): Promise<void> {
+    const targetAutoState = targetOverride ?? this.targetAutoState;
+
+    if (!targetAutoState) return;
+    if (targetAutoState.kind === "offboard") {
       // Offboard has it's own ticker.
       return;
     }
     if (this.stateManagerTickRunning) return;
     this.stateManagerTickRunning = true;
 
-    logger.debug(`[AUTO_STATE] Tick: targetAutoState=${JSON.stringify(this.targetAutoState)}`);
+    logger.debug(`[AUTO_STATE] Tick: targetAutoState=${JSON.stringify(targetAutoState)}`);
 
     try {
       let currentState = this.model.getCurrentState();
@@ -392,7 +394,7 @@ export class DroneController {
 
       logger.debug(`[AUTO_STATE] Current state: armed=${currentState.vehicle?.armed}, mode=${currentState.vehicle?.mode}, landed=${currentState.extended?.landed_state}`);
 
-      switch (this.targetAutoState.kind) {
+      switch (targetAutoState.kind) {
         case "landed": {
           // We need the drone landed.
           if (landing) {
@@ -404,9 +406,9 @@ export class DroneController {
             // However, when armed is null, the comparison this.targetAutoState.armed != currentState.vehicle?.armed is always true (since null != true and null != false),
             // and the subsequent if(this.targetAutoState.armed) check treats null as falsy, causing an unintended disarm command regardless of current state.
             // Do we want to disarm?
-            if(this.targetAutoState.armed != currentState.vehicle?.armed) {
+            if(targetAutoState.armed != currentState.vehicle?.armed) {
               // We need to change the arm state.
-              if(this.targetAutoState.armed) {
+              if(targetAutoState.armed) {
                 logger.info('[AUTO_STATE] Requesting drone arm');
                 await this.arm();
               } else {
@@ -430,7 +432,7 @@ export class DroneController {
         }
 
         case "airborne": {
-          let requestedAltitude = this.targetAutoState.altMeters;
+          let requestedAltitude = targetAutoState.altMeters;
 
           if(landed) {
             logger.info("[AUTO_STATE] Processing airborne state [landed = true]. Requesting takeoff");
@@ -495,6 +497,11 @@ export class DroneController {
       const isOffboard = DroneStateModel.isStateOffboard(currentState);
       const armed = DroneStateModel.isStateArmed(currentState);
 
+      if (takingOff || landing || landed) {
+        await this._tickAutoState(this._buildAirborneOverrideFromOffboardTarget(offboardTarget, currentState));
+        return;
+      }
+
       if (!armed) {
         await this.arm();
       }
@@ -507,6 +514,31 @@ export class DroneController {
       this.publishOffboardTarget(offboardTarget);
     } finally {
       this.offboardTickRunning = false;
+    }
+  }
+
+  private _buildAirborneOverrideFromOffboardTarget(
+    offboardTarget: OffboardTarget,
+    currentState: DroneState,
+  ): TargetAutoState {
+    switch (offboardTarget.kind) {
+      case "position_local":
+        return {
+          kind: "airborne",
+          altMeters: Math.abs(offboardTarget.z),
+          yawRad: offboardTarget.yawRad,
+        };
+      case "raw_local":
+        return {
+          kind: "airborne",
+          altMeters: Math.abs(offboardTarget.position?.z ?? currentState.local?.position?.z ?? 3),
+          yawRad: offboardTarget.yaw,
+        };
+      default:
+        return {
+          kind: "airborne",
+          altMeters: Math.abs(currentState.local?.position?.z ?? 3),
+        };
     }
   }
 
