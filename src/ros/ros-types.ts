@@ -251,3 +251,120 @@ export interface CommandLong_Response {
   success: boolean;
   result: number;
 }
+
+
+/** ---------- MAVROS mission message types ---------- */
+/** mavros_msgs/msg/Waypoint */
+export interface MavrosMsgsWaypoint {
+  frame: number;
+  command: number;
+  is_current: boolean;
+  autocontinue: boolean;
+  param1: number;
+  param2: number;
+  param3: number;
+  param4: number;
+  x_lat: number;
+  y_long: number;
+  z_alt: number;
+}
+
+/** mavros_msgs/msg/WaypointList */
+export interface MavrosMsgsWaypointList {
+  current_seq: number;
+  waypoints: MavrosMsgsWaypoint[];
+}
+
+/** mavros_msgs/msg/WaypointReached */
+export interface MavrosMsgsWaypointReached {
+  header: StdHeader;
+  wp_seq: number;
+}
+
+/** ---------- MAVROS mission service request/response types ---------- */
+/** mavros_msgs/srv/WaypointPush */
+export interface WaypointPush_Request {
+  start_index: number;
+  waypoints: MavrosMsgsWaypoint[];
+}
+export interface WaypointPush_Response {
+  success: boolean;
+  /** MAVROS spelling is "wp_transfered" */
+  wp_transfered: number;
+}
+
+/** mavros_msgs/srv/WaypointPull */
+export interface WaypointPull_Request {}
+export interface WaypointPull_Response {
+  success: boolean;
+  wp_received: number;
+}
+
+/** mavros_msgs/srv/WaypointClear */
+export interface WaypointClear_Request {}
+export interface WaypointClear_Response {
+  success: boolean;
+}
+
+/** mavros_msgs/srv/WaypointSetCurrent */
+export interface WaypointSetCurrent_Request {
+  wp_seq: number;
+}
+export interface WaypointSetCurrent_Response {
+  success: boolean;
+}
+
+/** ---------- Useful mission constants ---------- */
+
+export const MavrosWaypointFrame = {
+  GLOBAL: 0,
+  LOCAL_NED: 1,
+  MISSION: 2,
+  GLOBAL_REL_ALT: 3,
+  LOCAL_ENU: 4,
+  GLOBAL_INT: 5,
+  GLOBAL_RELATIVE_ALT_INT: 6,
+  LOCAL_OFFSET_NED: 7,
+  BODY_NED: 8,
+  BODY_OFFSET_NED: 9,
+  GLOBAL_TERRAIN_ALT: 10,
+  GLOBAL_TERRAIN_ALT_INT: 11,
+  BODY_FRD: 12,
+  RESERVED_13: 13,
+  RESERVED_14: 14,
+  RESERVED_15: 15,
+  LOCAL_FRD: 20,
+  LOCAL_FLU: 21,
+} as const;
+
+export type MavrosWaypointFrame =
+    (typeof MavrosWaypointFrame)[keyof typeof MavrosWaypointFrame];
+
+export const MavrosCommandCode = {
+  NAV_WAYPOINT: 16,
+  NAV_LOITER_UNLIM: 17,
+  NAV_LOITER_TURNS: 18,
+  NAV_LOITER_TIME: 19,
+  NAV_RETURN_TO_LAUNCH: 20,
+  NAV_LAND: 21,
+  NAV_TAKEOFF: 22,
+  NAV_LOITER_TO_ALT: 31,
+
+  DO_CHANGE_SPEED: 178,
+  DO_SET_HOME: 179,
+  DO_SET_SERVO: 183,
+  DO_SET_RELAY: 181,
+  DO_REPEAT_SERVO: 184,
+  DO_REPEAT_RELAY: 182,
+  DO_SET_ROI: 201,
+
+  IMAGE_START_CAPTURE: 2000,
+  IMAGE_STOP_CAPTURE: 2001,
+  VIDEO_START_CAPTURE: 2500,
+  VIDEO_STOP_CAPTURE: 2501,
+
+  MISSION_START: 300,
+} as const;
+
+export type MavrosCommandCode =
+    (typeof MavrosCommandCode)[keyof typeof MavrosCommandCode];
