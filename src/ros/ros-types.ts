@@ -1,3 +1,5 @@
+import type {MavrosMsgsWaypoint} from "./ros-types/mavros-msgs-waypoint";
+
 /** ---------- Common message structs ---------- */
 
 export interface BuiltinTime {
@@ -254,20 +256,7 @@ export interface CommandLong_Response {
 
 
 /** ---------- MAVROS mission message types ---------- */
-/** mavros_msgs/msg/Waypoint */
-export interface MavrosMsgsWaypoint {
-  frame: number;
-  command: number;
-  is_current: boolean;
-  autocontinue: boolean;
-  param1: number;
-  param2: number;
-  param3: number;
-  param4: number;
-  x_lat: number;
-  y_long: number;
-  z_alt: number;
-}
+export type {MavrosMsgsWaypoint} from "./ros-types/mavros-msgs-waypoint";
 
 /** mavros_msgs/msg/WaypointList */
 export interface MavrosMsgsWaypointList {
@@ -368,3 +357,5 @@ export const MavrosCommandCode = {
 
 export type MavrosCommandCode =
     (typeof MavrosCommandCode)[keyof typeof MavrosCommandCode];
+
+export * from "./ros-types/mavros-msgs-waypoint";
