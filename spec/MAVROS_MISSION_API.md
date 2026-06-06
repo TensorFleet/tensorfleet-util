@@ -6,79 +6,51 @@
 
 ## Startup
 
-`MissionApi` initializes
--> `ROS2Bridge` connects through `Foxglove`
--> `Foxglove` advertises MAVROS topics and services
--> `MissionApi` waits for required mission services
--> `MissionApi` subscribes to mission feedback topics
+`ROS2Bridge` subscribes to `/[node_id]/mission/waypoints`
+-> `ROS2Bridge` subscribes to `/[node_id]/mission/reached`
+-> `ROS2Bridge.waitForService()` confirms `/[node_id]/mission/pull`
+-> `ROS2Bridge.waitForService()` confirms `/[node_id]/mission/push`
+-> `ROS2Bridge.waitForService()` confirms `/[node_id]/mission/clear`
+-> `ROS2Bridge.waitForService()` confirms `/[node_id]/mission/set_current`
 
-required services:
-`/[node_id]/mission/pull`
-`/[node_id]/mission/push`
-`/[node_id]/mission/clear`
-`/[node_id]/mission/set_current`
+## Build mission data
 
-required feedback topics:
-`/[node_id]/mission/waypoints`
-`/[node_id]/mission/reached`
-`/[node_id]/state`
-`/[node_id]/statustext`
+The caller creates an ordered `MavrosMsgsWaypoint[]`
+-> each item is created with `new MavrosMissionWaypoint(...)`
+-> if the vehicle is not airborne, the first item is `TAKEOFF`
+-> if the vehicle is already airborne, the first item is not `TAKEOFF`
+-> if the final item is `LAND`, the mission ends by landing
+-> if the final item is not `LAND`, the mission ends airborne in hold/loiter
 
 ## Read mission
 
-UI requests current mission
--> `MissionApi` calls `/[node_id]/mission/pull`
--> MAVROS pulls mission from FCU
+The caller invokes `ROS2Bridge.callService()` for `/[node_id]/mission/pull`
 -> MAVROS publishes `/[node_id]/mission/waypoints`
--> `MissionApi` stores `MavrosMsgsWaypointList`
--> UI receives `current_seq` and `waypoints`
+-> the caller reads the stored mission and current item index
 
 ## Upload mission
 
-UI sends mission definition
--> `MissionApi` converts mission definition to `MavrosMsgsWaypoint[]`
--> `MissionApi` optionally calls `/[node_id]/mission/clear`
--> `MissionApi` calls `/[node_id]/mission/push` with `WaypointPush_Request`
--> MAVROS uploads waypoints to FCU
--> MAVROS returns `WaypointPush_Response`
--> `MissionApi` checks `success` and `wp_transfered`
--> `MissionApi` calls `/[node_id]/mission/pull`
+The caller invokes `ROS2Bridge.callService()` for `/[node_id]/mission/clear`
+-> the caller invokes `ROS2Bridge.callService()` for `/[node_id]/mission/push`
+-> the caller checks that the call succeeded and transferred every item
+-> the caller invokes `ROS2Bridge.callService()` for `/[node_id]/mission/pull`
 -> MAVROS publishes `/[node_id]/mission/waypoints`
--> `MissionApi` verifies uploaded mission against returned waypoint list
--> UI receives verified mission state
+-> the caller verifies the returned mission against the sent mission
 
 ## Set active mission item
 
-UI selects mission item index
--> `MissionApi` calls `/[node_id]/mission/set_current` with `WaypointSetCurrent_Request`
--> MAVROS sets active waypoint on FCU
--> MAVROS returns `WaypointSetCurrent_Response`
--> MAVROS publishes updated `/[node_id]/mission/waypoints`
--> `MissionApi` updates `current_seq`
--> UI receives active mission item
-
-## Start mission
-
-UI requests mission start
--> `MissionApi` confirms `/[node_id]/state` is connected
--> `MissionApi` arms vehicle using `/[node_id]/cmd/arming`
--> `MissionApi` sets mission mode using `/[node_id]/set_mode`
--> MAVROS publishes `/[node_id]/state`
--> `MissionApi` confirms armed and mission mode
--> UI receives mission running state
+The caller invokes `ROS2Bridge.callService()` for `/[node_id]/mission/set_current`
+-> MAVROS publishes `/[node_id]/mission/waypoints`
+-> the caller confirms the current item index
 
 ## Mission progress
 
-FCU advances mission
--> MAVROS publishes `/[node_id]/mission/reached`
--> MAVROS publishes `/[node_id]/mission/waypoints`
--> `MissionApi` updates reached waypoint and `current_seq`
--> UI receives mission progress
+MAVROS publishes `/[node_id]/mission/reached`
+-> the caller records the completed item index
 
-## Abort or stop mission
+MAVROS publishes `/[node_id]/mission/waypoints`
+-> the caller records the current item index
 
-UI requests abort
--> `MissionApi` changes mode using `/[node_id]/set_mode`
--> MAVROS publishes `/[node_id]/state`
--> `MissionApi` confirms vehicle left mission mode
--> UI receives stopped mission state
+## Mission completion
+
+-> the mission is complete when `/[node_id]/mission/reached` reports the final item
