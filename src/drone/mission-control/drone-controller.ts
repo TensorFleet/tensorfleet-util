@@ -230,6 +230,59 @@ export class DroneController {
     logger.info("[DRONE_CONTROLLER] RTL command result:", result);
   }
 
+  async sendMissionRequest(mission: RosTypes.MavrosMsgsWaypoint[]): Promise<void> {
+    await this._requireConnected();
+
+    if (!Array.isArray(mission) || mission.length === 0) {
+      throw new Error("Mission must contain at least one waypoint");
+    }
+
+    logger.info(`[DRONE_CONTROLLER] Sending mission request with ${mission.length} waypoints...`);
+
+    const clearResult = await this.mavrosMissionClear();
+    if (!clearResult?.success) {
+      throw new Error("Failed to clear existing mission");
+    }
+
+    const pushResult = await this.mavrosMissionPush({
+      start_index: 0,
+      waypoints: mission,
+    });
+    if (!pushResult?.success || pushResult.wp_transfered !== mission.length) {
+      throw new Error(`Mission push failed: transferred ${pushResult?.wp_transfered ?? 0}/${mission.length}`);
+    }
+
+    await this.ensureAirborneBeforeMissionSetCurrent(mission);
+
+    const setCurrentResult = await this.mavrosMissionSetCurrent(0);
+    if (!setCurrentResult?.success) {
+      throw new Error("Failed to set current mission waypoint");
+    }
+
+    await this.mavrosMissionPull();
+  }
+
+  private async ensureAirborneBeforeMissionSetCurrent(
+    mission: RosTypes.MavrosMsgsWaypoint[],
+    takeoffAltMeters = 1,
+    timeoutMs = 15000,
+  ): Promise<void> {
+    await this.waitForStateReady();
+
+    if (this.isDroneAirborne()) {
+      return;
+    }
+
+    if (mission[0]?.command === RosTypes.MavrosMissionCommand.TAKEOFF) {
+      logger.info("[DRONE_CONTROLLER] Mission starts with a takeoff waypoint. Skipping pre-takeoff before setting current mission waypoint.");
+      return;
+    }
+
+    logger.info(`[DRONE_CONTROLLER] Drone is not airborne. Requesting ${takeoffAltMeters}m takeoff before setting current mission waypoint...`);
+    await this.takeoff(takeoffAltMeters);
+    await this.waitUntilAirborne(timeoutMs);
+  }
+
   // -------- Requested state / auto state management --------
 
   public async requestAutoState(state: TargetAutoState): Promise<void> {
@@ -265,8 +318,35 @@ export class DroneController {
     throw new Error("Timed out waiting for drone telemetry before setting autopilot state");
   }
 
+  private async waitUntilAirborne(timeoutMs = 15000): Promise<void> {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      if (this.isDroneAirborne()) {
+        return;
+      }
+
+      await this.sleep(200);
+    }
+
+    throw new Error("Timed out waiting for drone to become airborne before setting current mission waypoint");
+  }
+
   public clearAutoState(): void {
     this.requestAutoState(null);
+  }
+
+  private isDroneAirborne(state: DroneState = this.model.getCurrentState()): boolean {
+    if (!state.vehicle || state.vehicle.connected !== true) {
+      return false;
+    }
+
+    const landed = DroneStateModel.isStateLanded(state);
+    const landing = DroneStateModel.isStateLanding(state);
+    const takingOff = DroneStateModel.isStateTakingOff(state);
+    const onGround = state.extended?.landed_state === LANDED.ON_GROUND;
+
+    return (state.vehicle.armed && !(landed || landing || takingOff || onGround)) ?? false;
   }
 
   public isInRequestedAutoState(debug: boolean = false): boolean {
@@ -293,7 +373,7 @@ export class DroneController {
         return landed && (this.targetAutoState.armed === null || this.targetAutoState.armed === currentState.vehicle?.armed);
       }
       case "airborne": {
-        return (currentState.vehicle?.armed && !( landed || landing || takingOff || onGround)) ?? false;
+        return this.isDroneAirborne(currentState);
       }
       case "offboard": {
         // TODO : add offboard target checks
@@ -653,6 +733,22 @@ export class DroneController {
       longitude: args.longitude ?? 0.0,
     };
     return await this.ros2Bridge.callService<RosTypes.CommandTOL_Response>("/mavros/cmd/land", req);
+  }
+
+  async mavrosMissionClear(): Promise<RosTypes.WaypointClear_Response> {
+    return await this.ros2Bridge.callService<RosTypes.WaypointClear_Response>("/mavros/mission/clear", {});
+  }
+
+  async mavrosMissionPush(req: RosTypes.WaypointPush_Request): Promise<RosTypes.WaypointPush_Response> {
+    return await this.ros2Bridge.callService<RosTypes.WaypointPush_Response>("/mavros/mission/push", req);
+  }
+
+  async mavrosMissionPull(): Promise<RosTypes.WaypointPull_Response> {
+    return await this.ros2Bridge.callService<RosTypes.WaypointPull_Response>("/mavros/mission/pull", {});
+  }
+
+  async mavrosMissionSetCurrent(wp_seq: number): Promise<RosTypes.WaypointSetCurrent_Response> {
+    return await this.ros2Bridge.callService<RosTypes.WaypointSetCurrent_Response>("/mavros/mission/set_current", { wp_seq });
   }
 
   // -------- Helpers --------
