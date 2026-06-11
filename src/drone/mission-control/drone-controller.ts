@@ -230,6 +230,45 @@ export class DroneController {
     logger.info("[DRONE_CONTROLLER] RTL command result:", result);
   }
 
+  private async setModeAndWait(
+      requestedMode: string,
+      timeoutMs = 5000,
+  ): Promise<void> {
+    logger.info(
+        `[DRONE_CONTROLLER] Requesting vehicle mode ${requestedMode}`,
+    );
+
+    const result = await this.mavrosSetMode(requestedMode, 0);
+
+    if (!result?.mode_sent) {
+      throw new Error(
+          `FCU rejected mode request for ${requestedMode}: ${JSON.stringify(result)}`,
+      );
+    }
+
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const actualMode =
+          this.model.getCurrentState().vehicle?.mode;
+
+      if (actualMode === requestedMode) {
+        logger.info(
+            `[DRONE_CONTROLLER] Vehicle entered ${requestedMode}`,
+        );
+        return;
+      }
+
+      await this.sleep(100);
+    }
+
+    throw new Error(
+        `Timed out entering ${requestedMode}; current mode is ${
+            this.model.getCurrentState().vehicle?.mode ?? "unknown"
+        }`,
+    );
+  }
+
   async sendMissionRequest(mission: RosTypes.MavrosMsgsWaypoint[]): Promise<void> {
     await this._requireConnected();
 
@@ -237,7 +276,11 @@ export class DroneController {
       throw new Error("Mission must contain at least one waypoint");
     }
 
-    logger.info(`[DRONE_CONTROLLER] Sending mission request with ${mission.length} waypoints...`);
+    /*
+     * Important: stop the requested-airborne controller from forcing the
+     * vehicle back into AUTO.LOITER while the mission is running.
+     */
+    this._targetAutoState = null;
 
     const clearResult = await this.mavrosMissionClear();
     if (!clearResult?.success) {
@@ -248,9 +291,21 @@ export class DroneController {
       start_index: 0,
       waypoints: mission,
     });
-    if (!pushResult?.success || pushResult.wp_transfered !== mission.length) {
-      throw new Error(`Mission push failed: transferred ${pushResult?.wp_transfered ?? 0}/${mission.length}`);
+
+    if (
+        !pushResult?.success ||
+        pushResult.wp_transfered !== mission.length
+    ) {
+      throw new Error(
+          `Mission push failed: transferred ${
+              pushResult?.wp_transfered ?? 0
+          }/${mission.length}`,
+      );
     }
+
+    logger.info(
+        `[DRONE_CONTROLLER] Uploaded ${mission.length} mission waypoints`,
+    );
 
     await this.ensureAirborneBeforeMissionSetCurrent(mission);
 
@@ -259,7 +314,33 @@ export class DroneController {
       throw new Error("Failed to set current mission waypoint");
     }
 
-    await this.mavrosMissionPull();
+    await this.setMode("AUTO.MISSION");
+
+    const pullResult = await this.mavrosMissionPull();
+    if (
+        !pullResult?.success ||
+        pullResult.wp_received !== mission.length
+    ) {
+      throw new Error(
+          `Mission verification failed: received ${
+              pullResult?.wp_received ?? 0
+          }/${mission.length}`,
+      );
+    }
+
+    // await this.setModeAndWait("AUTO.MISSION");
+
+    logger.info("[DRONE_CONTROLLER] Mission started in AUTO.MISSION");
+  }
+
+  private describeMissionCommand(command: number): string {
+    const commandName = RosTypes.MavrosMissionCommand[command];
+    return commandName ? `${commandName} (${command})` : `UNKNOWN (${command})`;
+  }
+
+  private describeMissionFrame(frame: number): string {
+    const frameName = RosTypes.MavrosMissionFrame[frame];
+    return frameName ? `${frameName} (${frame})` : `UNKNOWN (${frame})`;
   }
 
   private async ensureAirborneBeforeMissionSetCurrent(
