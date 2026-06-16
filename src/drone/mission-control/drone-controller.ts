@@ -280,7 +280,7 @@ export class DroneController {
      * Important: stop the requested-airborne controller from forcing the
      * vehicle back into AUTO.LOITER while the mission is running.
      */
-    this._targetAutoState = null;
+    await this.requestAutoState(null);
 
     const clearResult = await this.mavrosMissionClear();
     if (!clearResult?.success) {
