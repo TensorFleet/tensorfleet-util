@@ -1,14 +1,8 @@
+export * from "./ros-types/common.js";
+export * from "./ros-types/mavros-msgs-waypoint.js";
+
 /** ---------- Common message structs ---------- */
-
-export interface BuiltinTime {
-  sec: number;
-  nanosec: number;
-}
-
-export interface StdHeader {
-  stamp: BuiltinTime;
-  frame_id: string;
-}
+import type { StdHeader } from "./ros-types/common.js";
 
 export interface GeometryVector3 {
   x: number;

@@ -1,9 +1,9 @@
 // Export everything from tensorfleet-util
-export * from './entity/entity-api';
-export * from './entity/entity-state-model';
-export * from './drone/drone-state-model';
-export * from './drone/mission-control/drone-controller';
-export * from './ros/ros-bridge-api';
-export * from './ros/ros-types';
-export * from './ros/fetch-featured-entities';
-export * from './logger';
+export * from './entity/entity-api.js';
+export * from './entity/entity-state-model.js';
+export * from './drone/drone-state-model.js';
+export * from './drone/mission-control/drone-controller.js';
+export * from './ros/ros-bridge-api.js';
+export * from './ros/ros-types.js';
+export * from './ros/fetch-featured-entities.js';
+export * from './logger.js';

@@ -7,11 +7,12 @@
  *  - Requested/target state with optional automatic enforcement (tick every second)
  */
 
-import * as RosTypes from "../../ros/ros-types"
-import { DroneStateModel, LANDED } from "../drone-state-model";
-import type { ROS2BridgeApi } from "../../ros/ros-bridge-api";
-import { logger } from "../../logger";
+import * as RosTypes from "../../ros/ros-types.js"
+import { DroneStateModel, LANDED, type DroneState } from "../drone-state-model.js";
+import type { ROS2BridgeApi } from "../../ros/ros-bridge-api.js";
+import { logger } from "../../logger.js";
 import deepEqual from "fast-deep-equal";
+import typia from "typia";
 
 export enum LandedState {
   UNDEFINED = 0,
@@ -47,6 +48,28 @@ export type OffboardTarget =
       body_rate?: { x: number; y: number; z: number };
       thrust?: number;
     }
+
+const _validateTargetAutoState = typia.createValidate<TargetAutoState>();
+
+export function validateTargetAutoState(
+    input: unknown,
+): typia.IValidation<TargetAutoState> {
+  return _validateTargetAutoState(input);
+}
+
+export function assertTargetAutoState(input: unknown): TargetAutoState {
+  const result = validateTargetAutoState(input);
+
+  if (result.success) {
+    return result.data;
+  }
+
+  throw new Error(
+      result.errors
+          .map((e) => `${e.path}: expected ${e.expected}, got ${JSON.stringify(e.value)}`)
+          .join("\n"),
+  );
+}
 
 export interface DroneControllerOptions {
   localFrameId?: string;                // default "map"
@@ -105,7 +128,7 @@ export class DroneController {
       stateManagementIntervalMs: opts.stateManagementIntervalMs ?? 1000,
     };
 
-    this.model.onUpdate((s) => { this.latestState = s; });
+    this.model.onUpdate((s: Partial<DroneState>) => { this.latestState = s; });
   }
 
   async initialize(): Promise<void> {
@@ -142,7 +165,7 @@ export class DroneController {
     // Workaround. arm might fail due to unsupported state for arm.
     if (await this.model.isLanded()) {
       logger.info("[DRONE_CONTROLLER] Is in landed state while trying to arm. Switching vehicle mode to AUTO.LOITER");
-      await this.setMode("AUTO.LOITER");  
+      await this.setMode("AUTO.LOITER");
     }
 
     const result = await this.mavrosArmDisarm(true);
@@ -207,29 +230,212 @@ export class DroneController {
     logger.info("[DRONE_CONTROLLER] RTL command result:", result);
   }
 
+  private async setModeAndWait(
+      requestedMode: string,
+      timeoutMs = 5000,
+  ): Promise<void> {
+    logger.info(
+        `[DRONE_CONTROLLER] Requesting vehicle mode ${requestedMode}`,
+    );
+
+    const result = await this.mavrosSetMode(requestedMode, 0);
+
+    if (!result?.mode_sent) {
+      throw new Error(
+          `FCU rejected mode request for ${requestedMode}: ${JSON.stringify(result)}`,
+      );
+    }
+
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const actualMode =
+          this.model.getCurrentState().vehicle?.mode;
+
+      if (actualMode === requestedMode) {
+        logger.info(
+            `[DRONE_CONTROLLER] Vehicle entered ${requestedMode}`,
+        );
+        return;
+      }
+
+      await this.sleep(100);
+    }
+
+    throw new Error(
+        `Timed out entering ${requestedMode}; current mode is ${
+            this.model.getCurrentState().vehicle?.mode ?? "unknown"
+        }`,
+    );
+  }
+
+  async sendMissionRequest(mission: RosTypes.MavrosMsgsWaypoint[]): Promise<void> {
+    await this._requireConnected();
+
+    if (!Array.isArray(mission) || mission.length === 0) {
+      throw new Error("Mission must contain at least one waypoint");
+    }
+
+    /*
+     * Important: stop the requested-airborne controller from forcing the
+     * vehicle back into AUTO.LOITER while the mission is running.
+     */
+    await this.requestAutoState(null);
+
+    const clearResult = await this.mavrosMissionClear();
+    if (!clearResult?.success) {
+      throw new Error("Failed to clear existing mission");
+    }
+
+    const pushResult = await this.mavrosMissionPush({
+      start_index: 0,
+      waypoints: mission,
+    });
+
+    if (
+        !pushResult?.success ||
+        pushResult.wp_transfered !== mission.length
+    ) {
+      throw new Error(
+          `Mission push failed: transferred ${
+              pushResult?.wp_transfered ?? 0
+          }/${mission.length}`,
+      );
+    }
+
+    logger.info(
+        `[DRONE_CONTROLLER] Uploaded ${mission.length} mission waypoints`,
+    );
+
+    await this.ensureAirborneBeforeMissionSetCurrent(mission);
+
+    const setCurrentResult = await this.mavrosMissionSetCurrent(0);
+    if (!setCurrentResult?.success) {
+      throw new Error("Failed to set current mission waypoint");
+    }
+
+    await this.setMode("AUTO.MISSION");
+
+    const pullResult = await this.mavrosMissionPull();
+    if (
+        !pullResult?.success ||
+        pullResult.wp_received !== mission.length
+    ) {
+      throw new Error(
+          `Mission verification failed: received ${
+              pullResult?.wp_received ?? 0
+          }/${mission.length}`,
+      );
+    }
+
+    // await this.setModeAndWait("AUTO.MISSION");
+
+    logger.info("[DRONE_CONTROLLER] Mission started in AUTO.MISSION");
+  }
+
+  private describeMissionCommand(command: number): string {
+    const commandName = RosTypes.MavrosMissionCommand[command];
+    return commandName ? `${commandName} (${command})` : `UNKNOWN (${command})`;
+  }
+
+  private describeMissionFrame(frame: number): string {
+    const frameName = RosTypes.MavrosMissionFrame[frame];
+    return frameName ? `${frameName} (${frame})` : `UNKNOWN (${frame})`;
+  }
+
+  private async ensureAirborneBeforeMissionSetCurrent(
+    mission: RosTypes.MavrosMsgsWaypoint[],
+    takeoffAltMeters = 1,
+    timeoutMs = 15000,
+  ): Promise<void> {
+    await this.waitForStateReady();
+
+    if (this.isDroneAirborne()) {
+      return;
+    }
+
+    if (mission[0]?.command === RosTypes.MavrosMissionCommand.TAKEOFF) {
+      logger.info("[DRONE_CONTROLLER] Mission starts with a takeoff waypoint. Skipping pre-takeoff before setting current mission waypoint.");
+      return;
+    }
+
+    logger.info(`[DRONE_CONTROLLER] Drone is not airborne. Requesting ${takeoffAltMeters}m takeoff before setting current mission waypoint...`);
+    await this.takeoff(takeoffAltMeters);
+    await this.waitUntilAirborne(timeoutMs);
+  }
+
   // -------- Requested state / auto state management --------
 
   public async requestAutoState(state: TargetAutoState): Promise<void> {
-    this._targetAutoState = structuredClone(state);
+    const targetState = assertTargetAutoState(state);
+    this._targetAutoState = structuredClone(targetState);
 
-    if(state) {
+    if(targetState) {
+      await this.waitForStateReady();
       await this._tickAutoState();
-      while(deepEqual(this._targetAutoState,state) && !this.isInRequestedAutoState()) {
+      while(deepEqual(this._targetAutoState,targetState) && !this.isInRequestedAutoState()) {
         await this.sleep(100);
       }
 
-      logger.info("[DRONE_CONTROLLER] Target auto state reached:\n", state);
+      logger.info("[DRONE_CONTROLLER] Target auto state reached:\n", targetState);
     } else {
       logger.info("[DRONE_CONTROLLER] Target auto state cleared");
     }
+  }
+
+  private async waitForStateReady(timeoutMs = 5000): Promise<void> {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const state = await this.model.getState();
+
+      if (state.vehicle?.connected === true && state.extended?.landed_state != null) {
+        return;
+      }
+
+      await this.sleep(100);
+    }
+
+    throw new Error("Timed out waiting for drone telemetry before setting autopilot state");
+  }
+
+  private async waitUntilAirborne(timeoutMs = 15000): Promise<void> {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      if (this.isDroneAirborne()) {
+        return;
+      }
+
+      await this.sleep(200);
+    }
+
+    throw new Error("Timed out waiting for drone to become airborne before setting current mission waypoint");
   }
 
   public clearAutoState(): void {
     this.requestAutoState(null);
   }
 
+  private isDroneAirborne(state: DroneState = this.model.getCurrentState()): boolean {
+    if (!state.vehicle || state.vehicle.connected !== true) {
+      return false;
+    }
+
+    const landed = DroneStateModel.isStateLanded(state);
+    const landing = DroneStateModel.isStateLanding(state);
+    const takingOff = DroneStateModel.isStateTakingOff(state);
+    const onGround = state.extended?.landed_state === LANDED.ON_GROUND;
+
+    return (state.vehicle.armed && !(landed || landing || takingOff || onGround)) ?? false;
+  }
+
   public isInRequestedAutoState(debug: boolean = false): boolean {
     let currentState = this.model.getCurrentState();
+
+    if (!currentState.vehicle || currentState.vehicle.connected !== true) {
+      return false;
+    }
 
       const landed = DroneStateModel.isStateLanded(currentState);
       const landing = DroneStateModel.isStateLanding(currentState);
@@ -248,7 +454,7 @@ export class DroneController {
         return landed && (this.targetAutoState.armed === null || this.targetAutoState.armed === currentState.vehicle?.armed);
       }
       case "airborne": {
-        return (currentState.vehicle?.armed && !( landed || landing || takingOff || onGround)) ?? false;
+        return this.isDroneAirborne(currentState);
       }
       case "offboard": {
         // TODO : add offboard target checks
@@ -322,16 +528,18 @@ export class DroneController {
     }, this.opts.stateManagementIntervalMs);
   }
 
-  private async _tickAutoState(): Promise<void> {
-    if (!this.targetAutoState) return;
-    if (this.targetAutoState.kind === "offboard") {
+  private async _tickAutoState(targetOverride?: TargetAutoState): Promise<void> {
+    const targetAutoState = targetOverride ?? this.targetAutoState;
+
+    if (!targetAutoState) return;
+    if (targetAutoState.kind === "offboard") {
       // Offboard has it's own ticker.
       return;
     }
     if (this.stateManagerTickRunning) return;
     this.stateManagerTickRunning = true;
 
-    logger.debug(`[AUTO_STATE] Tick: targetAutoState=${JSON.stringify(this.targetAutoState)}`);
+    logger.debug(`[AUTO_STATE] Tick: targetAutoState=${JSON.stringify(targetAutoState)}`);
 
     try {
       let currentState = this.model.getCurrentState();
@@ -347,7 +555,7 @@ export class DroneController {
 
       logger.debug(`[AUTO_STATE] Current state: armed=${currentState.vehicle?.armed}, mode=${currentState.vehicle?.mode}, landed=${currentState.extended?.landed_state}`);
 
-      switch (this.targetAutoState.kind) {
+      switch (targetAutoState.kind) {
         case "landed": {
           // We need the drone landed.
           if (landing) {
@@ -359,9 +567,9 @@ export class DroneController {
             // However, when armed is null, the comparison this.targetAutoState.armed != currentState.vehicle?.armed is always true (since null != true and null != false),
             // and the subsequent if(this.targetAutoState.armed) check treats null as falsy, causing an unintended disarm command regardless of current state.
             // Do we want to disarm?
-            if(this.targetAutoState.armed != currentState.vehicle?.armed) {
+            if(targetAutoState.armed != currentState.vehicle?.armed) {
               // We need to change the arm state.
-              if(this.targetAutoState.armed) {
+              if(targetAutoState.armed) {
                 logger.info('[AUTO_STATE] Requesting drone arm');
                 await this.arm();
               } else {
@@ -385,7 +593,7 @@ export class DroneController {
         }
 
         case "airborne": {
-          let requestedAltitude = this.targetAutoState.altMeters;
+          let requestedAltitude = targetAutoState.altMeters;
 
           if(landed) {
             logger.info("[AUTO_STATE] Processing airborne state [landed = true]. Requesting takeoff");
@@ -450,6 +658,11 @@ export class DroneController {
       const isOffboard = DroneStateModel.isStateOffboard(currentState);
       const armed = DroneStateModel.isStateArmed(currentState);
 
+      if (takingOff || landing || landed) {
+        await this._tickAutoState(this._buildAirborneOverrideFromOffboardTarget(offboardTarget, currentState));
+        return;
+      }
+
       if (!armed) {
         await this.arm();
       }
@@ -462,6 +675,31 @@ export class DroneController {
       this.publishOffboardTarget(offboardTarget);
     } finally {
       this.offboardTickRunning = false;
+    }
+  }
+
+  private _buildAirborneOverrideFromOffboardTarget(
+    offboardTarget: OffboardTarget,
+    currentState: DroneState,
+  ): TargetAutoState {
+    switch (offboardTarget.kind) {
+      case "position_local":
+        return {
+          kind: "airborne",
+          altMeters: Math.abs(offboardTarget.z),
+          yawRad: offboardTarget.yawRad,
+        };
+      case "raw_local":
+        return {
+          kind: "airborne",
+          altMeters: Math.abs(offboardTarget.position?.z ?? currentState.local?.position?.z ?? 3),
+          yawRad: offboardTarget.yaw,
+        };
+      default:
+        return {
+          kind: "airborne",
+          altMeters: Math.abs(currentState.local?.position?.z ?? 3),
+        };
     }
   }
 
@@ -576,6 +814,22 @@ export class DroneController {
       longitude: args.longitude ?? 0.0,
     };
     return await this.ros2Bridge.callService<RosTypes.CommandTOL_Response>("/mavros/cmd/land", req);
+  }
+
+  async mavrosMissionClear(): Promise<RosTypes.WaypointClear_Response> {
+    return await this.ros2Bridge.callService<RosTypes.WaypointClear_Response>("/mavros/mission/clear", {});
+  }
+
+  async mavrosMissionPush(req: RosTypes.WaypointPush_Request): Promise<RosTypes.WaypointPush_Response> {
+    return await this.ros2Bridge.callService<RosTypes.WaypointPush_Response>("/mavros/mission/push", req);
+  }
+
+  async mavrosMissionPull(): Promise<RosTypes.WaypointPull_Response> {
+    return await this.ros2Bridge.callService<RosTypes.WaypointPull_Response>("/mavros/mission/pull", {});
+  }
+
+  async mavrosMissionSetCurrent(wp_seq: number): Promise<RosTypes.WaypointSetCurrent_Response> {
+    return await this.ros2Bridge.callService<RosTypes.WaypointSetCurrent_Response>("/mavros/mission/set_current", { wp_seq });
   }
 
   // -------- Helpers --------

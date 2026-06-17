@@ -1,5 +1,5 @@
 // drone-state-model.ts
-import { ROS2BridgeApi, UnsubscribeFn } from '../ros/ros-bridge-api';
+import type { MessageHandler, ROS2BridgeApi, UnsubscribeFn } from '../ros/ros-bridge-api.js';
 import type {
   SensorMsgsNavSatFix,
   StdMsgsFloat64,
@@ -11,10 +11,14 @@ import type {
   SensorMsgsImu,
   MavrosMsgsAltitude,
   MavrosMsgsHomePosition,
-} from '../ros/ros-types';
-import { logger } from "../logger";
-import type { EntityState } from '../entity/entity-state-model';
-import { EntityStateModel } from '../entity/entity-state-model';
+  MavrosMsgsWaypoint,
+  MavrosMsgsWaypointList,
+  MavrosMsgsWaypointReached,
+  WaypointPull_Response,
+} from '../ros/ros-types.js';
+import { logger } from "../logger.js";
+import type { EntityState } from '../entity/entity-state-model.js';
+import { EntityStateModel } from '../entity/entity-state-model.js';
 
 /**
  * Unified drone state assembled from MAVROS topics.
@@ -62,6 +66,19 @@ export type DroneState = EntityState & {
     armable?: boolean;
     arm_reasons?: string[];
   };
+
+  /** Mission read state mirrored from MAVROS mission topics and pull calls. */
+  mission?: {
+    time_boot_ms: number;
+    waypoints: MavrosMsgsWaypoint[];
+    current_seq?: number;
+    reached_seq?: number;
+    completed: boolean;
+    waypoint_count: number;
+    last_pull_success?: boolean;
+    last_pull_waypoint_count?: number;
+    last_pull_at?: number;
+  };
 };
 
 export type DroneStateUpdateListener = (state: Partial<DroneState>) => void;
@@ -79,6 +96,8 @@ type RosFrame =
       | SensorMsgsImu
       | MavrosMsgsAltitude
       | MavrosMsgsHomePosition
+      | MavrosMsgsWaypointList
+      | MavrosMsgsWaypointReached
     >
   | Record<string, unknown>;
 
@@ -94,6 +113,8 @@ export const LANDED = {
   TAKEOFF: 3,
   LANDING: 4,
 } as const;
+
+export const DEFAULT_MISSION_PULL_INTERVAL_MS = 1000;
 
 /** Minimal event emitter mixin for model updates. */
 abstract class EventEmitter extends EntityStateModel {
@@ -126,6 +147,12 @@ function isAltitude(x: any): x is MavrosMsgsAltitude { return x && ('amsl' in x 
 function isHomePosition(x: any): x is MavrosMsgsHomePosition {
   return x && x.geo && typeof x.geo.latitude === 'number' && typeof x.geo.longitude === 'number';
 }
+function isWaypointList(x: any): x is MavrosMsgsWaypointList {
+  return x && typeof x.current_seq === 'number' && Array.isArray(x.waypoints);
+}
+function isWaypointReached(x: any): x is MavrosMsgsWaypointReached {
+  return x && typeof x.wp_seq === 'number';
+}
 
 type RosStamp = { sec: number; nanosec: number };
 type HasHeaderStamp = { header?: { stamp?: RosStamp } };
@@ -139,7 +166,7 @@ export class DroneStateModel extends EventEmitter {
   public id: string;
 
   // Override the protected state from EntityStateModel with DroneState type
-  protected override state: Partial<DroneState> = {};
+  protected state: Partial<DroneState> = {};
   private updateListeners = new Set<DroneStateUpdateListener>();
   private statusUpdateListeners = new Set<DroneStateUpdateListener>();
   private sectionChangeListeners = new Map<keyof DroneState, Set<SectionChangeListener>>();
@@ -147,14 +174,16 @@ export class DroneStateModel extends EventEmitter {
   private prevNonNumericalJson: string | null = null;
 
   private updateInterval: any = null;
+  private missionPullInterval: any = null;
   private updated = false;
   private updateFps: number;
   private bridge: ROS2BridgeApi | null = null;
+  private missionPullInFlight = false;
   private unsubscribers: Map<string, UnsubscribeFn> = new Map();
 
   private lastSeen: Record<string, number> = {};
 
-  private allTopics: Set<string>;
+  private requiredTopics: Set<string>;
   private seenTopics: Set<string> = new Set();
   private allSeenPromise: Promise<void> | null = null;
   private resolveAllSeen: (() => void) | null = null;
@@ -177,6 +206,9 @@ export class DroneStateModel extends EventEmitter {
   private readonly T_IMU: string;
   private readonly T_ALT: string;
   private readonly T_HOME: string;
+  private readonly T_MISSION_WAYPOINTS: string;
+  private readonly T_MISSION_REACHED: string;
+  private readonly S_MISSION_PULL: string;
 
   private handlers: Record<string, (msg: any) => void>;
 
@@ -211,6 +243,9 @@ export class DroneStateModel extends EventEmitter {
     this.T_IMU = `/${this.baseMavrosNode}/imu/data`;
     this.T_ALT = `/${this.baseMavrosNode}/altitude`;
     this.T_HOME = `/${this.baseMavrosNode}/home_position/home`;
+    this.T_MISSION_WAYPOINTS = `/${this.baseMavrosNode}/mission/waypoints`;
+    this.T_MISSION_REACHED = `/${this.baseMavrosNode}/mission/reached`;
+    this.S_MISSION_PULL = `/${this.baseMavrosNode}/mission/pull`;
 
     this.handlers = {
       [this.T_FIX]: this.handleGlobalFix,
@@ -223,14 +258,27 @@ export class DroneStateModel extends EventEmitter {
       [this.T_IMU]: this.handleImu,
       [this.T_ALT]: this.handleAltitude,
       [this.T_HOME]: this.handleHomePosition,
+      [this.T_MISSION_WAYPOINTS]: this.handleMissionWaypoints,
+      [this.T_MISSION_REACHED]: this.handleMissionReached,
     };
 
-    this.allTopics = new Set(Object.keys(this.handlers));
+    this.requiredTopics = new Set([
+      this.T_FIX,
+      this.T_HDG,
+      this.T_STATE,
+      this.T_EXT_STATE,
+      this.T_BATT,
+      this.T_POSE,
+      this.T_VEL,
+      this.T_IMU,
+      this.T_ALT,
+      this.T_HOME,
+    ]);
     this.buggyTopics = [this.T_BATT];
   }
 
   /** Subscribes to required MAVROS topics via the bridge. */
-  public override connect(source: unknown): void {
+  public connect(source: unknown): void {
     const bridge = source as ROS2BridgeApi;
     logger.debug('[DEBUG] DroneStateModel.connect() called');
     this.disconnect();
@@ -251,18 +299,21 @@ export class DroneStateModel extends EventEmitter {
       { topic: this.T_IMU, type: 'sensor_msgs/msg/Imu' },
       { topic: this.T_ALT, type: 'mavros_msgs/msg/Altitude' },
       { topic: this.T_HOME, type: 'mavros_msgs/msg/HomePosition' },
+      { topic: this.T_MISSION_WAYPOINTS, type: 'mavros_msgs/msg/WaypointList' },
+      { topic: this.T_MISSION_REACHED, type: 'mavros_msgs/msg/WaypointReached' },
     ];
 
     logger.debug('[DEBUG] Subscribing to topics:', subs);
     subs.forEach(s => {
-      const unsubscribe = this.bridge!.subscribe(s, (msg) => this.ingest({ topic: s.topic, msg }));
+      const unsubscribe = this.bridge!.subscribe(s, ((msg) => this.ingest({ topic: s.topic, msg })) as MessageHandler);
       this.unsubscribers.set(s.topic, unsubscribe);
     });
     logger.debug('[DEBUG] DroneStateModel.connect() completed');
     this.startUpdateLoop();
+    this.startMissionPullLoop();
     this.debugInterval = setInterval(() => {
-      if (this.seenTopics.size < this.allTopics.size) {
-        const missing = Array.from(this.allTopics).filter(t => !this.seenTopics.has(t));
+      if (this.seenTopics.size < this.requiredTopics.size) {
+        const missing = Array.from(this.requiredTopics).filter(t => !this.seenTopics.has(t));
         logger.debug(`[DEBUG] Waiting for topics: ${missing.join(', ')}`);
       }
       const now = Date.now();
@@ -282,6 +333,10 @@ export class DroneStateModel extends EventEmitter {
       clearInterval(this.updateInterval);
       this.updateInterval = null;
     }
+    if (this.missionPullInterval !== null) {
+      clearInterval(this.missionPullInterval);
+      this.missionPullInterval = null;
+    }
     if (this.debugInterval !== null) {
       clearInterval(this.debugInterval);
       this.debugInterval = null;
@@ -298,6 +353,7 @@ export class DroneStateModel extends EventEmitter {
     this.resolveAllSeen = null;
     this.prevSectionJsons.clear();
     this.prevNonNumericalJson = null;
+    this.missionPullInFlight = false;
   }
 
   /** Registers a state update listener. */
@@ -455,7 +511,7 @@ export class DroneStateModel extends EventEmitter {
       handler.call(this, rosMsg);
 
       this.seenTopics.add(topic);
-      if (this.seenTopics.size === this.allTopics.size) {
+      if (Array.from(this.requiredTopics).every(requiredTopic => this.seenTopics.has(requiredTopic))) {
         this.resolveAllSeen?.();
         this.resolveAllSeen = null;
         this.allSeenPromise = Promise.resolve();
@@ -638,6 +694,43 @@ export class DroneStateModel extends EventEmitter {
     this.updated = true;
   }
 
+  private handleMissionWaypoints(msg: unknown) {
+    if (!isWaypointList(msg)) return;
+    this.ensureMission();
+    const oldMission = {
+      ...this.state.mission!,
+      waypoints: [...this.state.mission!.waypoints],
+    };
+    const currentSeq = this.normalizeMissionSeq(msg.current_seq);
+    const waypoints = [...msg.waypoints];
+    Object.assign(this.state.mission!, {
+      time_boot_ms: Date.now(),
+      current_seq: currentSeq,
+      waypoints,
+      waypoint_count: waypoints.length,
+      completed: this.isMissionCompleted(currentSeq, this.state.mission!.reached_seq, waypoints.length),
+    });
+    this.checkAndEmitChange('mission', oldMission, this.state.mission);
+    this.updated = true;
+  }
+
+  private handleMissionReached(msg: unknown) {
+    if (!isWaypointReached(msg)) return;
+    this.ensureMission();
+    const oldMission = {
+      ...this.state.mission!,
+      waypoints: [...this.state.mission!.waypoints],
+    };
+    const reachedSeq = this.normalizeMissionSeq(msg.wp_seq);
+    Object.assign(this.state.mission!, {
+      time_boot_ms: this.msgTimeMs(msg) ?? Date.now(),
+      reached_seq: reachedSeq,
+      completed: this.isMissionCompleted(this.state.mission!.current_seq, reachedSeq, this.state.mission!.waypoint_count),
+    });
+    this.checkAndEmitChange('mission', oldMission, this.state.mission);
+    this.updated = true;
+  }
+
   // -------- Section initializers --------
 
   private ensureGlobal() {
@@ -687,6 +780,16 @@ export class DroneStateModel extends EventEmitter {
   }
   private ensureAltitude() { if (!this.state.altitude) this.state.altitude = { time_boot_ms: Date.now() }; }
   private ensureHome() { if (!this.state.home) this.state.home = { time_boot_ms: Date.now(), lat: 0, lon: 0, alt: 0 }; }
+  private ensureMission() {
+    if (!this.state.mission) {
+      this.state.mission = {
+        time_boot_ms: Date.now(),
+        waypoints: [],
+        completed: false,
+        waypoint_count: 0,
+      };
+    }
+  }
   private ensureStatus() {
     if (!this.state.status) {
       this.state.status = {
@@ -748,6 +851,20 @@ export class DroneStateModel extends EventEmitter {
     return Math.abs(raw) > 360 ? raw / 100 : raw;
   }
 
+  private normalizeMissionSeq(seq: number | undefined): number | undefined {
+    return typeof seq === 'number' && seq >= 0 ? seq : undefined;
+  }
+
+  private isMissionCompleted(
+    currentSeq: number | undefined,
+    reachedSeq: number | undefined,
+    waypointCount: number,
+  ): boolean {
+    if (waypointCount <= 0 || reachedSeq === undefined) return false;
+    const finalIndex = waypointCount - 1;
+    return reachedSeq >= finalIndex && (currentSeq === undefined || currentSeq >= finalIndex);
+  }
+
   // -------- Update loop / health --------
 
   /** Periodically recomputes health and emits updates when state changed. */
@@ -792,6 +909,50 @@ export class DroneStateModel extends EventEmitter {
         this.prevNonNumericalJson = currentNonNumericalJson;
       }
     }, intervalMs);
+  }
+
+  private startMissionPullLoop() {
+    if (this.missionPullInterval !== null) return;
+    void this.pullMission();
+    this.missionPullInterval = setInterval(() => {
+      void this.pullMission();
+    }, DEFAULT_MISSION_PULL_INTERVAL_MS);
+  }
+
+  private async pullMission(): Promise<void> {
+    if (!this.bridge?.isConnected() || this.missionPullInFlight) return;
+
+    this.missionPullInFlight = true;
+    try {
+      const response = await this.bridge.callService<WaypointPull_Response>(this.S_MISSION_PULL, {}, { timeoutMs: 5000 });
+      this.ensureMission();
+      const oldMission = {
+        ...this.state.mission!,
+        waypoints: [...this.state.mission!.waypoints],
+      };
+      Object.assign(this.state.mission!, {
+        last_pull_success: !!response?.success,
+        last_pull_waypoint_count: typeof response?.wp_received === 'number' ? response.wp_received : undefined,
+        last_pull_at: Date.now(),
+      });
+      this.checkAndEmitChange('mission', oldMission, this.state.mission);
+      this.updated = true;
+    } catch (error) {
+      logger.debug('[DEBUG] mission/pull failed', error);
+      this.ensureMission();
+      const oldMission = {
+        ...this.state.mission!,
+        waypoints: [...this.state.mission!.waypoints],
+      };
+      Object.assign(this.state.mission!, {
+        last_pull_success: false,
+        last_pull_at: Date.now(),
+      });
+      this.checkAndEmitChange('mission', oldMission, this.state.mission);
+      this.updated = true;
+    } finally {
+      this.missionPullInFlight = false;
+    }
   }
 
   /** Updates link flags and minimal fault set based on data recency and thresholds. */

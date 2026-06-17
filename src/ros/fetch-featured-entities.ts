@@ -2,9 +2,9 @@
  * Utility functions for ROS bridge operations.
  */
 
-import type { ROS2BridgeApi } from "./ros-bridge-api";
-import { logger } from "../logger";
-import type { EntityData } from "../entity/entity-api";
+import type { ROS2BridgeApi } from "./ros-bridge-api.js";
+import { logger } from "../logger.js";
+import type { EntityData } from "../entity/entity-api.js";
 
 /**
  * Data type representing a featured entity card.

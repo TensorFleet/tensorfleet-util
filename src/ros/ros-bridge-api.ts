@@ -1,6 +1,6 @@
 // ros2-bridge-api.ts
 
-import type * as RosTypes from "./ros-types";
+import type * as RosTypes from "./ros-types.js";
 
 export interface Subscription {
   topic: string;

@@ -2,10 +2,10 @@
  * Entity API module - provides EntityData type and controller spawning functionality.
  */
 
-import type { ROS2BridgeApi } from "../ros/ros-bridge-api";
-import { DroneController } from "../drone/mission-control/drone-controller";
-import { DroneStateModel } from "../drone/drone-state-model";
-import { logger } from "../logger";
+import type { ROS2BridgeApi } from "../ros/ros-bridge-api.js";
+import { DroneController } from "../drone/mission-control/drone-controller.js";
+import { DroneStateModel } from "../drone/drone-state-model.js";
+import { logger } from "../logger.js";
 
 /**
  * Data type representing an entity card with predefined callbacks
