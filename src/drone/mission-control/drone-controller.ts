@@ -76,6 +76,67 @@ export interface DroneControllerOptions {
   minBatteryForFlight?: number;         // default 0.15
   autoStateManagement?: boolean;        // default false
   stateManagementIntervalMs?: number;   // default 1000
+  internalLogCapacity?: number;         // default 200
+  internalLogDestinationKey?: string;   // default "__unknown__"
+}
+
+export type DroneControllerLogEntryType = "request" | "state_change";
+
+export interface DroneControllerLogEntry {
+  at: string;
+  type: DroneControllerLogEntryType;
+  event: string;
+  data?: unknown;
+}
+
+export interface DroneControllerLogFilter {
+  type?: DroneControllerLogEntryType;
+  count?: number;
+}
+
+type DroneControllerGlobalLogState = {
+  destinationKey: string;
+  capacity: number;
+  entries: DroneControllerLogEntry[];
+  lastLoggedStateSummary: Record<string, unknown> | null;
+};
+
+const DRONE_CONTROLLER_LOG_STATE_KEY = Symbol.for("tensorfleet.drone-controller.log-state");
+
+function getDroneControllerGlobalLogState(
+  destinationKey: string,
+  capacity: number,
+): DroneControllerGlobalLogState {
+  const globalObject = globalThis as typeof globalThis & {
+    [DRONE_CONTROLLER_LOG_STATE_KEY]?: DroneControllerGlobalLogState;
+  };
+
+  const existing = globalObject[DRONE_CONTROLLER_LOG_STATE_KEY];
+  if (!existing) {
+    const created: DroneControllerGlobalLogState = {
+      destinationKey,
+      capacity,
+      entries: [],
+      lastLoggedStateSummary: null,
+    };
+    globalObject[DRONE_CONTROLLER_LOG_STATE_KEY] = created;
+    return created;
+  }
+
+  if (existing.destinationKey !== destinationKey) {
+    existing.destinationKey = destinationKey;
+    existing.capacity = capacity;
+    existing.entries = [];
+    existing.lastLoggedStateSummary = null;
+    return existing;
+  }
+
+  existing.capacity = capacity;
+  if (existing.entries.length > capacity) {
+    existing.entries.splice(0, existing.entries.length - capacity);
+  }
+
+  return existing;
 }
 
 export class DroneController {
@@ -98,6 +159,8 @@ export class DroneController {
   private stateManagerTickRunning = false;
 
   private latestState: any = {};
+  private readonly internalLogCapacity: number;
+  private readonly internalLogDestinationKey: string;
 
   private static readonly MAV_CMD_NAV_TAKEOFF = 22;
 
@@ -126,9 +189,16 @@ export class DroneController {
       minBatteryForFlight: opts.minBatteryForFlight ?? 0.15,
       autoStateManagement: opts.autoStateManagement ?? false,
       stateManagementIntervalMs: opts.stateManagementIntervalMs ?? 1000,
+      internalLogCapacity: opts.internalLogCapacity ?? 200,
+      internalLogDestinationKey: opts.internalLogDestinationKey ?? "__unknown__",
     };
+    this.internalLogCapacity = this.opts.internalLogCapacity;
+    this.internalLogDestinationKey = this.opts.internalLogDestinationKey;
 
-    this.model.onUpdate((s: Partial<DroneState>) => { this.latestState = s; });
+    this.model.onUpdate((s: Partial<DroneState>) => {
+      this.latestState = s;
+      this.logStateChange(this.model.getCurrentState());
+    });
   }
 
   async initialize(): Promise<void> {
@@ -153,6 +223,7 @@ export class DroneController {
   // -------- Basic services --------
 
   async arm(): Promise<void> {
+    this.logRequest("arm");
     await this._requireConnected();
 
     if (await this.model.isArmed()) {
@@ -173,6 +244,7 @@ export class DroneController {
   }
 
   async disarm(): Promise<void> {
+    this.logRequest("disarm");
     await this._requireConnected();
     logger.info("[DRONE_CONTROLLER] Sending disarm command...");
     const result = await this.mavrosArmDisarm(false);
@@ -180,6 +252,7 @@ export class DroneController {
   }
 
   async setMode(mode: string, base = 0, debug = true): Promise<void> {
+    this.logRequest("set_mode", { mode, base });
     await this._requireConnected();
     if(debug) {
       logger.info(`[DRONE_CONTROLLER] Setting mode to ${mode} (base=${base})...`);
@@ -191,6 +264,7 @@ export class DroneController {
   }
 
   async takeoff(altMeters: number = 3, yawRad = 0): Promise<void> {
+    this.logRequest("takeoff", { altMeters, yawRad });
     await this.arm();
 
     const gp = (await this.model.getState()).global_position_int;
@@ -217,6 +291,7 @@ export class DroneController {
   }
 
   async land(): Promise<void> {
+    this.logRequest("land");
     await this._requireConnected();
     logger.info("[DRONE_CONTROLLER] Sending land command...");
     const result = await this.mavrosLand();
@@ -224,6 +299,7 @@ export class DroneController {
   }
 
   async rtl(): Promise<void> {
+    this.logRequest("rtl");
     await this._requireConnected();
     logger.info("[DRONE_CONTROLLER] Sending return-to-launch (RTL) command...");
     const result = await this.mavrosSetMode("AUTO.RTL", 0);
@@ -270,6 +346,15 @@ export class DroneController {
   }
 
   async sendMissionRequest(mission: RosTypes.MavrosMsgsWaypoint[]): Promise<void> {
+    this.logRequest("send_mission_request", {
+      waypointCount: Array.isArray(mission) ? mission.length : 0,
+      firstWaypoint: mission[0]
+        ? {
+            command: this.describeMissionCommand(mission[0].command),
+            frame: this.describeMissionFrame(mission[0].frame),
+          }
+        : undefined,
+    });
     await this._requireConnected();
 
     if (!Array.isArray(mission) || mission.length === 0) {
@@ -366,6 +451,7 @@ export class DroneController {
 
   public async requestAutoState(state: TargetAutoState): Promise<void> {
     const targetState = assertTargetAutoState(state);
+    this.logRequest("request_auto_state", { targetState });
     this._targetAutoState = structuredClone(targetState);
 
     if(targetState) {
@@ -412,7 +498,24 @@ export class DroneController {
   }
 
   public clearAutoState(): void {
+    this.logRequest("clear_auto_state");
     this.requestAutoState(null);
+  }
+
+  public getInternalLog(filter?: DroneControllerLogFilter): DroneControllerLogEntry[] {
+    const store = this.getInternalLogStore();
+    const type = filter?.type;
+    const count = filter?.count;
+
+    let entries = type
+      ? store.entries.filter((entry) => entry.type === type)
+      : [...store.entries];
+
+    if (typeof count === "number" && Number.isFinite(count) && count > 0 && entries.length > count) {
+      entries = entries.slice(entries.length - count);
+    }
+
+    return structuredClone(entries);
   }
 
   private isDroneAirborne(state: DroneState = this.model.getCurrentState()): boolean {
@@ -859,6 +962,80 @@ export class DroneController {
 
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  private logRequest(event: string, data?: unknown): void {
+    this.pushLogEntry({
+      at: new Date().toISOString(),
+      type: "request",
+      event,
+      data: data === undefined ? undefined : structuredClone(data),
+    });
+  }
+
+  private logStateChange(state: DroneState): void {
+    const store = this.getInternalLogStore();
+    const summary = this.summarizeStateForLog(state);
+
+    if (store.lastLoggedStateSummary === null) {
+      store.lastLoggedStateSummary = summary;
+      this.pushLogEntry({
+        at: new Date().toISOString(),
+        type: "state_change",
+        event: "state_snapshot",
+        data: summary,
+      });
+      return;
+    }
+
+    const changes: Record<string, { from: unknown; to: unknown }> = {};
+    for (const [key, value] of Object.entries(summary)) {
+      const previous = store.lastLoggedStateSummary[key];
+      if (!deepEqual(previous, value)) {
+        changes[key] = { from: previous, to: value };
+      }
+    }
+
+    if (Object.keys(changes).length === 0) {
+      return;
+    }
+
+    store.lastLoggedStateSummary = summary;
+    this.pushLogEntry({
+      at: new Date().toISOString(),
+      type: "state_change",
+      event: "state_changed",
+      data: changes,
+    });
+  }
+
+  private summarizeStateForLog(state: DroneState): Record<string, unknown> {
+    return {
+      connected: state.vehicle?.connected ?? null,
+      armed: state.vehicle?.armed ?? null,
+      mode: state.vehicle?.mode ?? null,
+      landed_state: state.extended?.landed_state ?? null,
+      armable: state.status?.armable ?? null,
+      faults: state.status?.faults ?? null,
+      mission_current_seq: state.mission?.current_seq ?? null,
+      mission_reached_seq: state.mission?.reached_seq ?? null,
+      mission_completed: state.mission?.completed ?? null,
+    };
+  }
+
+  private pushLogEntry(entry: DroneControllerLogEntry): void {
+    const store = this.getInternalLogStore();
+    store.entries.push(entry);
+    if (store.entries.length > store.capacity) {
+      store.entries.splice(0, store.entries.length - store.capacity);
+    }
+  }
+
+  private getInternalLogStore(): DroneControllerGlobalLogState {
+    return getDroneControllerGlobalLogState(
+      this.internalLogDestinationKey,
+      this.internalLogCapacity,
+    );
   }
 
   private _yawToQuat(yaw: number): RosTypes.GeometryQuaternion {
