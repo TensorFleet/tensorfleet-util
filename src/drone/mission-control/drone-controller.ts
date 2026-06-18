@@ -328,8 +328,6 @@ export class DroneController {
       );
     }
 
-    // await this.setModeAndWait("AUTO.MISSION");
-
     logger.info("[DRONE_CONTROLLER] Mission started in AUTO.MISSION");
   }
 

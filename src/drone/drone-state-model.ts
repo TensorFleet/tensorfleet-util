@@ -16,6 +16,7 @@ import type {
   MavrosMsgsWaypointReached,
   WaypointPull_Response,
 } from '../ros/ros-types.js';
+import deepEqual from 'fast-deep-equal';
 import { logger } from "../logger.js";
 import type { EntityState } from '../entity/entity-state-model.js';
 import { EntityStateModel } from '../entity/entity-state-model.js';
@@ -82,6 +83,11 @@ export type DroneState = EntityState & {
 };
 
 export type DroneStateUpdateListener = (state: Partial<DroneState>) => void;
+
+export type MissionStateMatchOptions = {
+  mode?: string;
+  completed?: boolean;
+};
 
 type RosPublish<T> = { op: 'publish'; topic: string; msg: T };
 type RosFrame =
@@ -445,6 +451,14 @@ export class DroneStateModel extends EventEmitter {
     return DroneStateModel.isStateAirborne(this.state);
   }
 
+  public async isOnMission(
+    mission: MavrosMsgsWaypoint[],
+    options: MissionStateMatchOptions = {},
+  ): Promise<boolean> {
+    await this.waitForTopics([this.T_STATE, this.T_MISSION_WAYPOINTS]);
+    return DroneStateModel.isStateOnMission(this.state, mission, options);
+  }
+
   // Static utility functions for synchronous state checks
 
   /**
@@ -494,6 +508,27 @@ export class DroneStateModel extends EventEmitter {
     const takingOff = DroneStateModel.isStateTakingOff(state);
 
     return (armed && !(landed || landing || takingOff)) ?? false;
+  }
+
+  public static areMissionWaypointsEqual(
+    actualMission: MavrosMsgsWaypoint[] | undefined,
+    expectedMission: MavrosMsgsWaypoint[] | undefined,
+  ): boolean {
+    if (!actualMission || !expectedMission) return false;
+    if (actualMission.length !== expectedMission.length) return false;
+    return actualMission.every((waypoint, index) => deepEqual(waypoint, expectedMission[index]));
+  }
+
+  public static isStateOnMission(
+    state: DroneState | Partial<DroneState>,
+    mission: MavrosMsgsWaypoint[],
+    options: MissionStateMatchOptions = {},
+  ): boolean {
+    const expectedMode = options.mode ?? 'AUTO.MISSION';
+    if (state.vehicle?.mode !== expectedMode) return false;
+    if (!DroneStateModel.areMissionWaypointsEqual(state.mission?.waypoints, mission)) return false;
+    if (options.completed !== undefined && state.mission?.completed !== options.completed) return false;
+    return true;
   }
 
 
