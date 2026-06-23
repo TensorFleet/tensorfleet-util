@@ -8,11 +8,16 @@ import type { VacuumCommand, VacuumCommandResult } from "./commands.js";
 import { buildVacuumMapMetadata, parseVacuumMapGrid } from "./mapGrid.js";
 import type {
   VacuumAdapterSnapshot,
+  VacuumAvailability,
   VacuumBatteryState,
+  VacuumFaultState,
   VacuumMapAnnotation,
   VacuumMappingStatus,
   VacuumMissionCollection,
   VacuumMissionSnapshot,
+  VacuumReadinessSummary,
+  VacuumRuntimeHealth,
+  VacuumSourceState,
 } from "./state.js";
 import {
   mapVacuumCommandToValetudoRequest,
@@ -20,7 +25,10 @@ import {
   mapValetudoRuntimeSnapshotToBoundary,
   mapValetudoState,
   mapVacuumCommandToValetudoRuntimeCommandName,
+  type ValetudoCommandRequest,
   type ValetudoRuntimeCommandResult,
+  type ValetudoRuntimeCommandRequest,
+  type ValetudoRuntimeHealth,
   type ValetudoRuntimeSnapshot,
 } from "./backends/valetudo/index.js";
 import {
@@ -53,6 +61,14 @@ export type VacuumRuntimeContext = {
   withRosConnection?: <T>(fn: () => Promise<T>) => Promise<T>;
 };
 
+export type VacuumRuntimeHealthSnapshot = {
+  availability: VacuumAvailability;
+  health: VacuumRuntimeHealth;
+  source: VacuumSourceState;
+  readiness: VacuumReadinessSummary;
+  fault: VacuumFaultState;
+};
+
 type RosTopicInfo = { topic: string; type: string };
 type RosServiceInfo = { service: string; type: string };
 
@@ -74,6 +90,49 @@ export async function createVacuumAdapter(
     return await createValetudoNodeAdapter(config);
   }
   return await createTurtleBot4Nav2Adapter(config, context);
+}
+
+export async function readVacuumRuntimeHealth(config: VacuumRuntimeConfig): Promise<VacuumRuntimeHealthSnapshot> {
+  if (config.backend !== "valetudo") {
+    throw new Error(`Lightweight health checks are not implemented for vacuum backend: ${config.backend}`);
+  }
+
+  const health = await requestValetudo<ValetudoRuntimeHealth>(config, "GET", "health");
+  const connected = health.runtime.status === "online" || health.runtime.status === "degraded";
+  const source = mapValetudoRuntimeHealthSource(health);
+  const blockingReasons = [
+    ...(health.runtime.status === "offline" ? ["Valetudo integration runtime is offline."] : []),
+    ...(source.status === "unreachable" ? ["Valetudo source is unreachable."] : []),
+    ...(source.status === "stale" ? ["Valetudo source state is stale."] : []),
+  ];
+
+  return {
+    availability: {
+      status: connected ? "online" : "offline",
+      connected,
+      detail: connected ? "Valetudo integration runtime is online." : "Valetudo integration runtime is not online.",
+    },
+    health: {
+      runtimeStatus: health.runtime.status,
+      updatedAt: health.updatedAt,
+      detail:
+        health.runtime.status === "online"
+          ? "Valetudo integration runtime is online."
+          : health.runtime.status === "degraded"
+            ? "Valetudo integration runtime is degraded."
+            : "Valetudo integration runtime is offline.",
+    },
+    source,
+    readiness: {
+      ready: blockingReasons.length === 0,
+      blockingReasons,
+    },
+    fault: {
+      readiness: connected ? "waiting" : "unavailable",
+      faults: [],
+      detail: "Fault state requires a full Valetudo snapshot.",
+    },
+  };
 }
 
 export function normalizeVacuumBackend(value: string): VacuumBackend {
@@ -115,19 +174,63 @@ async function createValetudoNodeAdapter(config: VacuumRuntimeConfig): Promise<V
       }
 
       const runtimeCommand = mapVacuumCommandToValetudoRuntimeCommandName(command.command, latestRuntimeSnapshot);
+      const runtimeCommandRequest = buildValetudoRuntimeCommandRequest(runtimeCommand, commandRequest.request);
       const runtimeResult = await requestValetudo<ValetudoRuntimeCommandResult>(
         config,
         "POST",
         "command",
-        {
-          command: runtimeCommand,
-          params: commandRequest.request,
-        },
+        runtimeCommandRequest,
         { allowErrorBody: true },
       );
       return mapValetudoRuntimeCommandResult(command.command, runtimeResult);
     },
   };
+}
+
+function buildValetudoRuntimeCommandRequest(
+  command: string,
+  request: ValetudoCommandRequest,
+): ValetudoRuntimeCommandRequest {
+  const params = mapValetudoRuntimeCommandParams(request);
+  return params == null ? { command } : { command, params };
+}
+
+function mapValetudoRuntimeCommandParams(request: ValetudoCommandRequest): Record<string, unknown> | undefined {
+  if (request.type === "basic_control") {
+    return undefined;
+  }
+  if (request.type === "set_fan_speed" || request.type === "set_water_usage") {
+    return { value: request.value };
+  }
+  if (request.type === "go_to_location") {
+    return { target: request.target };
+  }
+  if (request.type === "zone_cleaning") {
+    return { zones: request.zones };
+  }
+  return undefined;
+}
+
+function mapValetudoRuntimeHealthSource(health: ValetudoRuntimeHealth): VacuumSourceState {
+  const status = health.source.stale
+    ? "stale"
+    : health.source.status === "reachable" || health.source.status === "unreachable"
+      ? health.source.status
+      : "unknown";
+  return {
+    kind: mapValetudoRuntimeSourceKind(health.source.kind),
+    status,
+    stale: health.source.stale,
+    lastSeenAt: health.source.lastSeenAt,
+    reason: status === "stale" ? "stale_source" : status === "unreachable" ? "source_unreachable" : undefined,
+  };
+}
+
+function mapValetudoRuntimeSourceKind(kind: ValetudoRuntimeHealth["source"]["kind"]): VacuumSourceState["kind"] {
+  if (kind === "fixed_mock" || kind === "valetudo_mock" || kind === "valetudo_http" || kind === "real_robot") {
+    return kind;
+  }
+  return "unknown";
 }
 
 async function createTurtleBot4Nav2Adapter(
