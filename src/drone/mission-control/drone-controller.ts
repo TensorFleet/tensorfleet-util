@@ -95,40 +95,50 @@ export interface DroneControllerLogFilter {
 }
 
 type DroneControllerGlobalLogState = {
-  destinationKey: string;
   capacity: number;
   entries: DroneControllerLogEntry[];
   lastLoggedStateSummary: Record<string, unknown> | null;
 };
 
+type DroneControllerGlobalLogStore = Map<string, DroneControllerGlobalLogState>;
+
 const DRONE_CONTROLLER_LOG_STATE_KEY = Symbol.for("tensorfleet.drone-controller.log-state");
+const DEFAULT_DRONE_CONTROLLER_LOG_DESTINATION_KEY = "default";
 
 function getDroneControllerGlobalLogState(
   destinationKey: string,
   capacity: number,
 ): DroneControllerGlobalLogState {
   const globalObject = globalThis as typeof globalThis & {
-    [DRONE_CONTROLLER_LOG_STATE_KEY]?: DroneControllerGlobalLogState;
+    [DRONE_CONTROLLER_LOG_STATE_KEY]?: DroneControllerGlobalLogStore | DroneControllerGlobalLogState;
   };
 
-  const existing = globalObject[DRONE_CONTROLLER_LOG_STATE_KEY];
+  let store = globalObject[DRONE_CONTROLLER_LOG_STATE_KEY];
+  if (store && !(store instanceof Map)) {
+    const migrated = new Map<string, DroneControllerGlobalLogState>();
+    migrated.set(DEFAULT_DRONE_CONTROLLER_LOG_DESTINATION_KEY, {
+      capacity: store.capacity,
+      entries: store.entries,
+      lastLoggedStateSummary: store.lastLoggedStateSummary,
+    });
+    store = migrated;
+    globalObject[DRONE_CONTROLLER_LOG_STATE_KEY] = store;
+  }
+
+  if (!store) {
+    store = new Map<string, DroneControllerGlobalLogState>();
+    globalObject[DRONE_CONTROLLER_LOG_STATE_KEY] = store;
+  }
+
+  const existing = store.get(destinationKey);
   if (!existing) {
     const created: DroneControllerGlobalLogState = {
-      destinationKey,
       capacity,
       entries: [],
       lastLoggedStateSummary: null,
     };
-    globalObject[DRONE_CONTROLLER_LOG_STATE_KEY] = created;
+    store.set(destinationKey, created);
     return created;
-  }
-
-  if (existing.destinationKey !== destinationKey) {
-    existing.destinationKey = destinationKey;
-    existing.capacity = capacity;
-    existing.entries = [];
-    existing.lastLoggedStateSummary = null;
-    return existing;
   }
 
   existing.capacity = capacity;
@@ -190,7 +200,7 @@ export class DroneController {
       autoStateManagement: opts.autoStateManagement ?? false,
       stateManagementIntervalMs: opts.stateManagementIntervalMs ?? 1000,
       internalLogCapacity: opts.internalLogCapacity ?? 200,
-      internalLogDestinationKey: opts.internalLogDestinationKey ?? "__unknown__",
+      internalLogDestinationKey: opts.internalLogDestinationKey ?? DEFAULT_DRONE_CONTROLLER_LOG_DESTINATION_KEY,
     };
     this.internalLogCapacity = this.opts.internalLogCapacity;
     this.internalLogDestinationKey = this.opts.internalLogDestinationKey;
