@@ -28,6 +28,14 @@ export type TargetAutoState =
   | { kind: "airborne"; altMeters: number; yawRad?: number }
   | { kind: "offboard"; target: OffboardTarget}
 
+export type WaitForMissionIndexResult =
+  | {
+      success: true;
+    }
+  | {
+      success: false;
+    };
+
 export type OffboardTarget =
   | { kind: "position_local"; x: number; y: number; z: number; yawRad?: number }
   | { kind: "velocity_local"; vx: number; vy: number; vz: number; yawRate?: number }
@@ -424,6 +432,52 @@ export class DroneController {
     }
 
     logger.info("[DRONE_CONTROLLER] Mission started in AUTO.MISSION");
+  }
+
+  async wait_for_mission_index(
+    mission_data: RosTypes.MavrosMsgsWaypoint[],
+    index: number,
+  ): Promise<WaitForMissionIndexResult> {
+    this.logRequest("wait_for_mission_index", {
+      waypointCount: Array.isArray(mission_data) ? mission_data.length : 0,
+      index,
+    });
+    await this._requireConnected();
+
+    if (!Array.isArray(mission_data) || mission_data.length === 0) {
+      throw new Error("mission_data must contain at least one waypoint");
+    }
+
+    if (!Number.isInteger(index) || index < 0 || index >= mission_data.length) {
+      throw new Error(`Mission index must be an integer between 0 and ${mission_data.length - 1}`);
+    }
+
+    while (true) {
+      const state = await this.model.getState();
+      const currentSeq = state.mission?.current_seq ?? null;
+      const reachedSeq = state.mission?.reached_seq ?? null;
+      const mode = state.vehicle?.mode ?? null;
+
+      if (mode !== "AUTO.MISSION") {
+        return {
+          success: false,
+        };
+      }
+
+      if (!DroneStateModel.areMissionWaypointsEqual(state.mission?.waypoints, mission_data)) {
+        return {
+          success: false,
+        };
+      }
+
+      if ((reachedSeq !== null && reachedSeq >= index) || (currentSeq !== null && currentSeq >= index)) {
+        return {
+          success: true,
+        };
+      }
+
+      await this.sleep(100);
+    }
   }
 
   private describeMissionCommand(command: number): string {
