@@ -4,7 +4,7 @@ import * as https from "https";
 import type { ROS2BridgeApi } from "../ros/ros-bridge-api.js";
 import type { VacuumAdapter } from "./adapter.js";
 import type { VacuumCapabilities } from "./capabilities.js";
-import type { VacuumCommand, VacuumCommandResult } from "./commands.js";
+import type { VacuumCommand, VacuumCommandName, VacuumCommandResult } from "./commands.js";
 import { buildVacuumMapMetadata, parseVacuumMapGrid } from "./mapGrid.js";
 import type {
   VacuumAdapterSnapshot,
@@ -32,6 +32,7 @@ import {
   type ValetudoRuntimeSnapshot,
 } from "./backends/valetudo/index.js";
 import {
+  MISSION_SERVICE_NAMES,
   mapTurtleBot4Nav2Capabilities,
   unsupportedTurtleBot4Nav2Command,
   type TurtleBot4Nav2RuntimeState,
@@ -43,6 +44,13 @@ export const DEFAULT_VACUUM_TIMEOUT_MS = 5000;
 const SIMULATION_TOPIC_TIMEOUT_MS = 1200;
 const SIMULATION_MISSION_SNAPSHOT_SERVICE = "/vacuum_mission/get_snapshot";
 const SIMULATION_MAP_ANNOTATION_SNAPSHOT_SERVICE = "/vacuum_map_annotations/get_snapshot";
+
+type SimulationMissionControlCommand =
+  | "pause_mission"
+  | "resume_mission"
+  | "cancel_mission"
+  | "retry_mission_step"
+  | "skip_mission_step";
 
 export type VacuumBackend = "valetudo" | "turtlebot4_nav2";
 export type VacuumBackendInput = VacuumBackend | "simulation" | "real_vacuum" | "real-vacuum" | "turtlebot4-nav2";
@@ -76,6 +84,7 @@ type SimulationRosSnapshot = {
   topics: RosTopicInfo[];
   services: RosServiceInfo[];
   mapMessage: Record<string, unknown> | null;
+  poseMessage: Record<string, unknown> | null;
   batteryMessage: Record<string, unknown> | null;
   missionSnapshot: Record<string, unknown> | null;
   mapAnnotationSnapshot: Record<string, unknown> | null;
@@ -249,7 +258,144 @@ async function createTurtleBot4Nav2Adapter(
 
   return {
     snapshot: context.withRosConnection ? await context.withRosConnection(read) : await read(),
-    sendCommand: async (command: VacuumCommand): Promise<VacuumCommandResult> => unsupportedTurtleBot4Nav2Command(command.command),
+    sendCommand: async (command: VacuumCommand): Promise<VacuumCommandResult> => {
+      const dispatch = async () => {
+        const latestSnapshot = await read();
+        return await dispatchTurtleBot4Nav2Command(command, latestSnapshot, rosBridge);
+      };
+      return context.withRosConnection ? await context.withRosConnection(dispatch) : await dispatch();
+    },
+  };
+}
+
+async function dispatchTurtleBot4Nav2Command(
+  command: VacuumCommand,
+  snapshot: VacuumAdapterSnapshot,
+  rosBridge: ROS2BridgeApi,
+): Promise<VacuumCommandResult> {
+  if (command.command === "start_navigation") {
+    if (!snapshot.capabilities.start_navigation.supported) return unsupportedTurtleBot4Nav2Command(command.command);
+    if (!snapshot.readiness.ready) return notReadyCommand(command.command, snapshot.readiness.blockingReasons);
+    const parameterResult = await setSimulationMissionRequest(rosBridge, command.command, "navigation_request", {
+      target: command.target,
+    });
+    if (parameterResult) return parameterResult;
+    return await callSimulationTriggerService(rosBridge, MISSION_SERVICE_NAMES.startNavigation, command.command);
+  }
+
+  if (command.command === "start_coverage") {
+    if (!snapshot.capabilities.start_coverage.supported) return unsupportedTurtleBot4Nav2Command(command.command);
+    if (!snapshot.readiness.ready) return notReadyCommand(command.command, snapshot.readiness.blockingReasons);
+    const payload: Record<string, unknown> = { area: command.area };
+    if (command.route && command.route.length > 0) payload.route = command.route;
+    if (command.coverage) payload.coverage = command.coverage;
+    const parameterResult = await setSimulationMissionRequest(rosBridge, command.command, "coverage_request", payload);
+    if (parameterResult) return parameterResult;
+    return await callSimulationTriggerService(rosBridge, MISSION_SERVICE_NAMES.startCoverage, command.command);
+  }
+
+  const missionServiceByCommand: Record<SimulationMissionControlCommand, string> = {
+    pause_mission: MISSION_SERVICE_NAMES.pause,
+    resume_mission: MISSION_SERVICE_NAMES.resume,
+    cancel_mission: MISSION_SERVICE_NAMES.cancel,
+    retry_mission_step: MISSION_SERVICE_NAMES.retryStep,
+    skip_mission_step: MISSION_SERVICE_NAMES.skipStep,
+  };
+  if (isSimulationMissionControlCommand(command.command)) {
+    const missionCommand = command.command;
+    const missionService = missionServiceByCommand[missionCommand];
+    const capability = snapshot.capabilities[missionCommand];
+    if (!capability.supported) return unsupportedTurtleBot4Nav2Command(missionCommand);
+    return await callSimulationTriggerService(rosBridge, missionService, missionCommand);
+  }
+
+  return unsupportedTurtleBot4Nav2Command(command.command);
+}
+
+function isSimulationMissionControlCommand(command: VacuumCommandName): command is SimulationMissionControlCommand {
+  return (
+    command === "pause_mission" ||
+    command === "resume_mission" ||
+    command === "cancel_mission" ||
+    command === "retry_mission_step" ||
+    command === "skip_mission_step"
+  );
+}
+
+async function setSimulationMissionRequest(
+  rosBridge: ROS2BridgeApi,
+  command: VacuumCommandName,
+  parameterName: "navigation_request" | "coverage_request",
+  payload: Record<string, unknown>,
+): Promise<VacuumCommandResult | null> {
+  try {
+    const response = await rosBridge.callService<Record<string, unknown>>(
+      MISSION_SERVICE_NAMES.setParameters,
+      {
+        parameters: [
+          {
+            name: parameterName,
+            value: {
+              type: 4,
+              string_value: JSON.stringify(payload),
+            },
+          },
+        ],
+      },
+      { timeoutMs: DEFAULT_VACUUM_TIMEOUT_MS },
+    );
+    const results = Array.isArray(response?.results) ? response.results : [];
+    const failed = results.find((entry) => isRecord(entry) && entry.successful === false);
+    if (failed) {
+      return backendError(command, typeof failed.reason === "string" ? failed.reason : "Mission request parameter update failed.");
+    }
+    return null;
+  } catch (error) {
+    return backendError(command, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function callSimulationTriggerService(
+  rosBridge: ROS2BridgeApi,
+  serviceName: string,
+  command: VacuumCommandName,
+): Promise<VacuumCommandResult> {
+  try {
+    const response = await rosBridge.callService<Record<string, unknown>>(serviceName, {}, { timeoutMs: DEFAULT_VACUUM_TIMEOUT_MS });
+    if (response?.success === false) {
+      return backendError(command, typeof response.message === "string" ? response.message : "Mission runtime returned failure.");
+    }
+    return {
+      ok: true,
+      command,
+      message: typeof response?.message === "string" ? response.message : `Dispatched ${command}.`,
+    };
+  } catch (error) {
+    return backendError(command, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function notReadyCommand(command: VacuumCommandName, blockers: string[]): VacuumCommandResult {
+  return {
+    ok: false,
+    command,
+    error: {
+      code: "not_ready",
+      command,
+      message: `Adapter not ready to dispatch: ${blockers.join(" ")}`,
+    },
+  };
+}
+
+function backendError(command: VacuumCommandName, message: string): VacuumCommandResult {
+  return {
+    ok: false,
+    command,
+    error: {
+      code: "backend_error",
+      command,
+      message,
+    },
   };
 }
 
@@ -337,8 +483,9 @@ async function readSimulationRosSnapshot(rosBridge: ROS2BridgeApi): Promise<Simu
   const missionSnapshotService = findService(services, SIMULATION_MISSION_SNAPSHOT_SERVICE);
   const annotationSnapshotService = findService(services, SIMULATION_MAP_ANNOTATION_SNAPSHOT_SERVICE);
 
-  const [mapMessage, batteryMessage, missionSnapshot, mapAnnotationSnapshot] = await Promise.all([
+  const [mapMessage, poseMessage, batteryMessage, missionSnapshot, mapAnnotationSnapshot] = await Promise.all([
     readOptionalRosTopic(rosBridge, findTopic(topics, "/map"), SIMULATION_TOPIC_TIMEOUT_MS),
+    readOptionalRosTopic(rosBridge, findFirstTopic(topics, ["/pose", "/amcl_pose", "/odom"]), SIMULATION_TOPIC_TIMEOUT_MS),
     readOptionalRosTopic(rosBridge, findFirstTopic(topics, ["/battery_state", "/battery"]), SIMULATION_TOPIC_TIMEOUT_MS),
     missionSnapshotService ? callOptionalRosService(rosBridge, missionSnapshotService.service) : Promise.resolve(null),
     annotationSnapshotService ? callOptionalRosService(rosBridge, annotationSnapshotService.service) : Promise.resolve(null),
@@ -348,6 +495,7 @@ async function readSimulationRosSnapshot(rosBridge: ROS2BridgeApi): Promise<Simu
     topics,
     services,
     mapMessage,
+    poseMessage,
     batteryMessage,
     missionSnapshot,
     mapAnnotationSnapshot,
@@ -456,11 +604,11 @@ function mapSimulationSnapshot(snapshot: SimulationRosSnapshot, rosBridge: ROS2B
       annotations,
     },
     pose: {
-      readiness: "waiting",
-      available: false,
-      source: "/pose",
-      coordinates: null,
-      detail: "Pose is not sampled by this tool runtime.",
+      readiness: runtime.currentMapCoordinates ? "ready" : "waiting",
+      available: runtime.currentMapCoordinates != null,
+      source: runtime.helperPoseSource,
+      coordinates: runtime.currentMapCoordinates ?? null,
+      detail: runtime.currentMapCoordinates ? "Pose is available." : "Waiting for localized pose or odometry fallback.",
     },
     navigation: {
       state: "idle",
@@ -517,6 +665,7 @@ function mapSimulationSnapshot(snapshot: SimulationRosSnapshot, rosBridge: ROS2B
         missionSnapshot: snapshot.missionSnapshot,
         mapAnnotationSnapshot: snapshot.mapAnnotationSnapshot,
         mapMessage: snapshot.mapMessage,
+        poseMessage: snapshot.poseMessage,
         batteryMessage: snapshot.batteryMessage,
       },
     },
@@ -527,6 +676,7 @@ function buildTurtleBotRuntimeState(
   snapshot: SimulationRosSnapshot,
   rosBridge: ROS2BridgeApi,
 ): TurtleBot4Nav2RuntimeState {
+  const pose = parseSimulationPose(snapshot.poseMessage);
   return {
     connectionStatus: rosBridge.isConnected() ? "connected" : "disconnected",
     availableTopics: snapshot.topics,
@@ -537,7 +687,40 @@ function buildTurtleBotRuntimeState(
       lastMessageAt: entry.topic === "/map" && snapshot.mapMessage ? snapshot.updatedAt : null,
     })),
     goalState: "ready",
+    currentMapCoordinates: pose,
+    helperPoseSource: pose ? "normalized pose" : "unavailable",
   };
+}
+
+function parseSimulationPose(message: Record<string, unknown> | null): { x: number; y: number; yaw: number | null } | null {
+  const pose = unwrapPose(message);
+  const position = isRecord(pose?.position) ? pose.position : null;
+  if (!position) return null;
+  const x = numberEntry(position, "x");
+  const y = numberEntry(position, "y");
+  if (x == null || y == null) return null;
+  const orientation = isRecord(pose?.orientation) ? pose.orientation : null;
+  return {
+    x,
+    y,
+    yaw: orientation ? yawFromQuaternion(orientation) : null,
+  };
+}
+
+function unwrapPose(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  if (isRecord(value.position)) return value;
+  if (isRecord(value.pose)) return unwrapPose(value.pose);
+  return null;
+}
+
+function yawFromQuaternion(value: Record<string, unknown>): number | null {
+  const x = numberEntry(value, "x") ?? 0;
+  const y = numberEntry(value, "y") ?? 0;
+  const z = numberEntry(value, "z") ?? 0;
+  const w = numberEntry(value, "w") ?? 1;
+  if (![x, y, z, w].every(Number.isFinite)) return null;
+  return Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
 }
 
 function normalizeBattery(message: Record<string, unknown> | null, connected: boolean): VacuumBatteryState {

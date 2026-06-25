@@ -38,6 +38,8 @@ export type TurtleBot4Nav2RuntimeState = {
   availableServices: string[];
   topicHealth: TurtleBot4Nav2TopicHealth[];
   goalState: TurtleBot4Nav2GoalState;
+  currentMapCoordinates?: { x: number; y: number; yaw: number | null } | null;
+  helperPoseSource?: string;
 };
 
 export const TURTLEBOT4_NAV2_SEND_GOAL_SERVICE = "/navigate_to_pose/_action/send_goal";
