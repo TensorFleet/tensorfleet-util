@@ -36,6 +36,11 @@ export type WaitForMissionIndexResult =
       success: false;
     };
 
+export type MissionDataMatchInput =
+  | RosTypes.MavrosMsgsWaypoint[]
+  | string
+  | { missionHash: string };
+
 export type OffboardTarget =
   | { kind: "position_local"; x: number; y: number; z: number; yawRad?: number }
   | { kind: "velocity_local"; vx: number; vy: number; vz: number; yawRate?: number }
@@ -77,6 +82,52 @@ export function assertTargetAutoState(input: unknown): TargetAutoState {
           .map((e) => `${e.path}: expected ${e.expected}, got ${JSON.stringify(e.value)}`)
           .join("\n"),
   );
+}
+
+export async function createMissionDataHash(missionData: RosTypes.MavrosMsgsWaypoint[]): Promise<string> {
+  if (!Array.isArray(missionData)) {
+    throw new Error("missionData must be an array of waypoints");
+  }
+
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(stableStringify(missionData)),
+  );
+
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+
+  switch (typeof value) {
+    case "number":
+      if (Number.isNaN(value)) return '"__NaN__"';
+      if (value === Infinity) return '"__Infinity__"';
+      if (value === -Infinity) return '"__-Infinity__"';
+      if (Object.is(value, -0)) return '"__-0__"';
+      return JSON.stringify(value);
+    case "bigint":
+      return `"${value.toString()}n"`;
+    case "boolean":
+    case "string":
+      return JSON.stringify(value);
+    case "undefined":
+      return '"__undefined__"';
+    case "object":
+      if (Array.isArray(value)) {
+        return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+      }
+
+      return `{${Object.keys(value as Record<string, unknown>)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`)
+        .join(",")}}`;
+    default:
+      return JSON.stringify(String(value));
+  }
 }
 
 export interface DroneControllerOptions {
@@ -215,7 +266,7 @@ export class DroneController {
 
     this.model.onUpdate((s: Partial<DroneState>) => {
       this.latestState = s;
-      this.logStateChange(this.model.getCurrentState());
+      void this.logStateChange(this.model.getCurrentState());
     });
   }
 
@@ -364,8 +415,10 @@ export class DroneController {
   }
 
   async sendMissionRequest(mission: RosTypes.MavrosMsgsWaypoint[]): Promise<void> {
+    const missionHash = Array.isArray(mission) ? await createMissionDataHash(mission) : undefined;
     this.logRequest("send_mission_request", {
       waypointCount: Array.isArray(mission) ? mission.length : 0,
+      missionHash,
       firstWaypoint: mission[0]
         ? {
             command: this.describeMissionCommand(mission[0].command),
@@ -407,7 +460,7 @@ export class DroneController {
     }
 
     logger.info(
-        `[DRONE_CONTROLLER] Uploaded ${mission.length} mission waypoints`,
+        `[DRONE_CONTROLLER] Uploaded ${mission.length} mission waypoints (hash=${missionHash})`,
     );
 
     await this.ensureAirborneBeforeMissionSetCurrent(mission);
@@ -435,21 +488,27 @@ export class DroneController {
   }
 
   async wait_for_mission_index(
-    mission_data: RosTypes.MavrosMsgsWaypoint[],
+    mission_data: MissionDataMatchInput,
     index: number,
   ): Promise<WaitForMissionIndexResult> {
+    const missionMatch = await this.resolveMissionDataMatchInput(mission_data);
     this.logRequest("wait_for_mission_index", {
-      waypointCount: Array.isArray(mission_data) ? mission_data.length : 0,
+      waypointCount: missionMatch.missionData?.length ?? null,
+      missionHash: missionMatch.missionHash,
       index,
     });
     await this._requireConnected();
 
-    if (!Array.isArray(mission_data) || mission_data.length === 0) {
+    if (missionMatch.missionData && missionMatch.missionData.length === 0) {
       throw new Error("mission_data must contain at least one waypoint");
     }
 
-    if (!Number.isInteger(index) || index < 0 || index >= mission_data.length) {
-      throw new Error(`Mission index must be an integer between 0 and ${mission_data.length - 1}`);
+    if (!Number.isInteger(index) || index < 0) {
+      throw new Error("Mission index must be a non-negative integer");
+    }
+
+    if (missionMatch.missionData && index >= missionMatch.missionData.length) {
+      throw new Error(`Mission index must be an integer between 0 and ${missionMatch.missionData.length - 1}`);
     }
 
     while (true) {
@@ -464,7 +523,13 @@ export class DroneController {
         };
       }
 
-      if (!DroneStateModel.areMissionWaypointsEqual(state.mission?.waypoints, mission_data)) {
+      if (!(await this.doesStateMissionMatch(state.mission?.waypoints, missionMatch))) {
+        return {
+          success: false,
+        };
+      }
+
+      if (state.mission?.waypoints && index >= state.mission.waypoints.length) {
         return {
           success: false,
         };
@@ -478,6 +543,49 @@ export class DroneController {
 
       await this.sleep(100);
     }
+  }
+
+  private async resolveMissionDataMatchInput(input: MissionDataMatchInput): Promise<{
+    missionData?: RosTypes.MavrosMsgsWaypoint[];
+    missionHash: string;
+  }> {
+    if (Array.isArray(input)) {
+      if (input.length === 0) {
+        throw new Error("mission_data must contain at least one waypoint");
+      }
+
+      return {
+        missionData: input,
+        missionHash: await createMissionDataHash(input),
+      };
+    }
+
+    const missionHash = typeof input === "string" ? input : input.missionHash;
+    if (typeof missionHash !== "string" || !/^[a-f0-9]{64}$/i.test(missionHash)) {
+      throw new Error("mission_data hash must be a 64-character SHA-256 hex string");
+    }
+
+    return {
+      missionHash: missionHash.toLowerCase(),
+    };
+  }
+
+  private async doesStateMissionMatch(
+    stateMission: RosTypes.MavrosMsgsWaypoint[] | undefined,
+    missionMatch: {
+      missionData?: RosTypes.MavrosMsgsWaypoint[];
+      missionHash: string;
+    },
+  ): Promise<boolean> {
+    if (!stateMission) {
+      return false;
+    }
+
+    if (missionMatch.missionData) {
+      return DroneStateModel.areMissionWaypointsEqual(stateMission, missionMatch.missionData);
+    }
+
+    return await createMissionDataHash(stateMission) === missionMatch.missionHash;
   }
 
   private describeMissionCommand(command: number): string {
@@ -1037,9 +1145,9 @@ export class DroneController {
     });
   }
 
-  private logStateChange(state: DroneState): void {
+  private async logStateChange(state: DroneState): Promise<void> {
     const store = this.getInternalLogStore();
-    const summary = this.summarizeStateForLog(state);
+    const summary = await this.summarizeStateForLog(state);
 
     if (store.lastLoggedStateSummary === null) {
       store.lastLoggedStateSummary = summary;
@@ -1073,7 +1181,7 @@ export class DroneController {
     });
   }
 
-  private summarizeStateForLog(state: DroneState): Record<string, unknown> {
+  private async summarizeStateForLog(state: DroneState): Promise<Record<string, unknown>> {
     return {
       connected: state.vehicle?.connected ?? null,
       armed: state.vehicle?.armed ?? null,
@@ -1084,6 +1192,7 @@ export class DroneController {
       mission_current_seq: state.mission?.current_seq ?? null,
       mission_reached_seq: state.mission?.reached_seq ?? null,
       mission_completed: state.mission?.completed ?? null,
+      mission_hash: state.mission?.waypoints ? await createMissionDataHash(state.mission.waypoints) : null,
     };
   }
 
