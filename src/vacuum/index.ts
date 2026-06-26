@@ -4,5 +4,6 @@ export * from "./commands.js";
 export * from "./errors.js";
 export * from "./mapGrid.js";
 export * from "./state.js";
+export * from "./targets.js";
 export * from "./backends/valetudo/index.js";
 export * from "./backends/turtlebot4-nav2/index.js";

@@ -20,8 +20,6 @@ import type {
   VacuumMapLayerKind,
   VacuumMapRun,
   VacuumMaintenanceState,
-  VacuumMapTarget,
-  VacuumMapTargetGeometry,
   VacuumMapTargets,
   VacuumMissionSnapshot,
   VacuumMissionState,
@@ -35,9 +33,10 @@ import type {
 } from "../../state.js";
 import type { VacuumCapabilities } from "../../capabilities.js";
 import { buildVacuumMapMetadata } from "../../mapGrid.js";
+import { normalizeRuntimeMapTargetList } from "../../targets.js";
 import type { ValetudoBackendCapability } from "./capabilityMapper.js";
 import { mapValetudoCapabilities } from "./capabilityMapper.js";
-import type { ValetudoRuntimeMapEntity, ValetudoRuntimeMapLayer, ValetudoRuntimeMapTarget, ValetudoRuntimeSnapshot } from "./runtimeContract.js";
+import type { ValetudoRuntimeMapEntity, ValetudoRuntimeMapLayer, ValetudoRuntimeSnapshot } from "./runtimeContract.js";
 import type { ValetudoRuntimeBoundary } from "./types.js";
 
 const EMPTY_NAVIGATION: VacuumNavigationStatus = {
@@ -727,65 +726,17 @@ function normalizeMapTargets(snapshot: ValetudoRuntimeSnapshot): VacuumMapTarget
   if (sourceUnavailableReason(snapshot) || snapshot.map?.available !== true) {
     return undefined;
   }
-  const segments = normalizeMapTargetList(snapshot.map.targets?.segments, "segment");
-  const zones = normalizeMapTargetList(snapshot.map.targets?.zones, "zone");
+  const sourceMetadata = {
+    kind: "runtime" as const,
+    backendSource: "valetudo" as const,
+    mapId: snapshot.map.metadata?.id ?? null,
+    updatedAt: snapshot.map.updatedAt,
+    sourceStatus: normalizeSourceStatus(snapshot),
+    stale: snapshot.source.stale,
+  };
+  const segments = normalizeRuntimeMapTargetList(snapshot.map.targets?.segments, "segment", sourceMetadata);
+  const zones = normalizeRuntimeMapTargetList(snapshot.map.targets?.zones, "zone", sourceMetadata);
   return segments.length > 0 || zones.length > 0 ? { segments, zones } : undefined;
-}
-
-function normalizeMapTargetList(
-  values: ValetudoRuntimeMapTarget[] | undefined,
-  expectedKind: "segment" | "zone",
-): VacuumMapTarget[] {
-  const seen = new Set<string>();
-  return (values ?? [])
-    .filter((item): item is ValetudoRuntimeMapTarget => (
-      item != null &&
-      typeof item.id === "string" &&
-      item.id.trim() !== "" &&
-      typeof item.label === "string" &&
-      item.label.trim() !== ""
-    ))
-    .map((item): VacuumMapTarget => ({
-      id: item.id.trim(),
-      label: item.label.trim(),
-      kind: expectedKind,
-      source: "runtime",
-      available: item.available === true,
-      geometry: normalizeMapTargetGeometry(item.geometry),
-      detail: typeof item.detail === "string" && item.detail.trim() !== "" ? item.detail : undefined,
-    }))
-    .filter((item) => {
-      if (seen.has(item.id)) {
-        return false;
-      }
-      seen.add(item.id);
-      return true;
-    });
-}
-
-function normalizeMapTargetGeometry(value: unknown): VacuumMapTargetGeometry | undefined {
-  if (!isRecord(value) || typeof value.type !== "string") {
-    return undefined;
-  }
-  const points = normalizeMapPoints(value.points);
-  const bounds = normalizeMapBounds(value.bounds);
-  if (value.type === "polygon" && points && points.length >= 3) {
-    return { type: "polygon", points };
-  }
-  if (value.type === "rectangle" && bounds) {
-    return { type: "rectangle", bounds };
-  }
-  if (value.type === "unknown" && (points || bounds)) {
-    const geometry: VacuumMapTargetGeometry = { type: "unknown" };
-    if (points) {
-      geometry.points = points;
-    }
-    if (bounds) {
-      geometry.bounds = bounds;
-    }
-    return geometry;
-  }
-  return undefined;
 }
 
 function normalizeMapPoints(value: unknown): Array<{ x: number; y: number }> | undefined {
@@ -800,17 +751,6 @@ function normalizeMapPoints(value: unknown): Array<{ x: number; y: number }> | u
     }))
     .filter((point): point is { x: number; y: number } => point.x != null && point.y != null);
   return points.length > 0 ? points : undefined;
-}
-
-function normalizeMapBounds(value: unknown): { x: number; y: number; width: number; height: number } | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const x = typeof value.x === "number" && Number.isFinite(value.x) ? value.x : null;
-  const y = typeof value.y === "number" && Number.isFinite(value.y) ? value.y : null;
-  const width = typeof value.width === "number" && Number.isFinite(value.width) && value.width > 0 ? value.width : null;
-  const height = typeof value.height === "number" && Number.isFinite(value.height) && value.height > 0 ? value.height : null;
-  return x != null && y != null && width != null && height != null ? { x, y, width, height } : undefined;
 }
 
 function normalizePositiveInteger(value: unknown): number | undefined {

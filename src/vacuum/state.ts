@@ -218,6 +218,25 @@ export type VacuumMapAnnotation = {
 };
 
 export type VacuumMapTargetKind = "segment" | "room" | "zone";
+export type VacuumMapTargetSourceKind = "runtime" | "user_annotation" | "derived" | "unknown";
+export type VacuumMapTargetReadinessStatus =
+  | "ready"
+  | "missing_target"
+  | "invalid_target_geometry"
+  | "unsupported_backend"
+  | "stale_or_unavailable_map_source"
+  | "target_not_callable"
+  | "ambiguous_target";
+
+export type VacuumMapTargetSourceMetadata = {
+  kind: VacuumMapTargetSourceKind;
+  backendSource?: VacuumBackendSource;
+  mapId?: string | null;
+  updatedAt?: number | string | null;
+  sourceStatus?: VacuumSourceStatus;
+  stale?: boolean;
+  detail?: string;
+};
 
 export type VacuumMapTargetGeometry =
   | {
@@ -234,14 +253,32 @@ export type VacuumMapTargetGeometry =
       type: "unknown";
       points?: Array<{ x: number; y: number }>;
       bounds?: { x: number; y: number; width: number; height: number };
+    }
+  | {
+      type: "segment_id";
+      segmentId: string;
+    }
+  | {
+      type: "room_id";
+      roomId: string;
+    }
+  | {
+      type: "zone_id";
+      zoneId: string;
     };
 
 export type VacuumMapTarget = {
   id: string;
   label: string;
   kind: VacuumMapTargetKind;
+  /**
+   * @deprecated Use sourceMetadata. Kept for compatibility with existing callers.
+   */
   source: "runtime" | "user";
   available: boolean;
+  readiness?: VacuumMapTargetReadinessStatus;
+  callable?: boolean;
+  sourceMetadata?: VacuumMapTargetSourceMetadata;
   geometry?: VacuumMapTargetGeometry;
   detail?: string;
 };

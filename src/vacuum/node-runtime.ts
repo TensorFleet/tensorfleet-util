@@ -37,6 +37,7 @@ import {
   unsupportedTurtleBot4Nav2Command,
   type TurtleBot4Nav2RuntimeState,
 } from "./backends/turtlebot4-nav2/index.js";
+import { normalizeVacuumMapTargetsFromAnnotations } from "./targets.js";
 
 const VM_MANAGER_REAL_VACUUM_PATH = "/vms/self/tensorfleet/api/v1/valetudo";
 const DIRECT_REAL_VACUUM_PATH = "/api/v1/valetudo";
@@ -569,6 +570,14 @@ function mapSimulationSnapshot(snapshot: SimulationRosSnapshot, rosBridge: ROS2B
         ? "navigating"
         : "idle";
   const annotations = normalizeAnnotations(snapshot.mapAnnotationSnapshot);
+  const targets = normalizeVacuumMapTargetsFromAnnotations(annotations, {
+    kind: "user_annotation",
+    backendSource: "turtlebot4_nav2",
+    mapId: null,
+    updatedAt: snapshot.updatedAt,
+    sourceStatus: rosBridge.isConnected() ? "reachable" : "unreachable",
+    stale: false,
+  });
 
   return {
     identity: {
@@ -601,6 +610,7 @@ function mapSimulationSnapshot(snapshot: SimulationRosSnapshot, rosBridge: ROS2B
       detail: grid ? "Occupancy grid received from ROS." : "Waiting for /map occupancy grid.",
       grid,
       metadata: mapMetadata,
+      targets,
       annotations,
     },
     pose: {
