@@ -12,6 +12,8 @@ import type {
   VacuumBatteryState,
   VacuumFaultState,
   VacuumMapAnnotation,
+  VacuumMapTarget,
+  VacuumMapTargetGeometry,
   VacuumMappingStatus,
   VacuumMissionCollection,
   VacuumMissionSnapshot,
@@ -295,6 +297,26 @@ async function dispatchTurtleBot4Nav2Command(
     return await callSimulationTriggerService(rosBridge, MISSION_SERVICE_NAMES.startCoverage, command.command);
   }
 
+  if (command.command === "start_room_cleaning" || command.command === "start_zone_cleaning") {
+    const capabilityName = command.command === "start_room_cleaning" ? "room_cleaning" : "zone_cleaning";
+    if (!snapshot.capabilities[capabilityName].supported) return unsupportedTurtleBot4Nav2Command(command.command);
+    if (!snapshot.readiness.ready) return notReadyCommand(command.command, snapshot.readiness.blockingReasons);
+    const area = targetGeometryToCoverageArea(command.target.geometry);
+    if (!area) {
+      return backendError(command.command, "Resolved target geometry cannot be converted into a simulation coverage request.");
+    }
+    const payload: Record<string, unknown> = {
+      target: simulationTargetPayload(command.target),
+      area,
+      missionType: command.command === "start_room_cleaning" ? "room_cleaning" : "zone_cleaning",
+    };
+    if (command.route && command.route.length > 0) payload.route = command.route;
+    if (command.coverage) payload.coverage = command.coverage;
+    const parameterResult = await setSimulationMissionRequest(rosBridge, command.command, "coverage_request", payload);
+    if (parameterResult) return parameterResult;
+    return await callSimulationTriggerService(rosBridge, MISSION_SERVICE_NAMES.startCoverage, command.command);
+  }
+
   const missionServiceByCommand: Record<SimulationMissionControlCommand, string> = {
     pause_mission: MISSION_SERVICE_NAMES.pause,
     resume_mission: MISSION_SERVICE_NAMES.resume,
@@ -321,6 +343,36 @@ function isSimulationMissionControlCommand(command: VacuumCommandName): command 
     command === "retry_mission_step" ||
     command === "skip_mission_step"
   );
+}
+
+function targetGeometryToCoverageArea(geometry: VacuumMapTargetGeometry | undefined) {
+  if (!geometry) return null;
+  if (geometry.type === "rectangle") {
+    return {
+      shape: "rectangle" as const,
+      minX: geometry.bounds.x,
+      minY: geometry.bounds.y,
+      maxX: geometry.bounds.x + geometry.bounds.width,
+      maxY: geometry.bounds.y + geometry.bounds.height,
+    };
+  }
+  if (geometry.type === "polygon") {
+    return {
+      shape: "polygon" as const,
+      points: geometry.points,
+    };
+  }
+  return null;
+}
+
+function simulationTargetPayload(target: VacuumMapTarget) {
+  return {
+    id: target.id,
+    label: target.label,
+    kind: target.kind,
+    source: target.source,
+    sourceMetadata: target.sourceMetadata,
+  };
 }
 
 async function setSimulationMissionRequest(

@@ -1,5 +1,5 @@
 import type { VacuumCommandError } from "./errors.js";
-import type { VacuumGoalCoordinates, VacuumMapAnnotation } from "./state.js";
+import type { VacuumGoalCoordinates, VacuumMapAnnotation, VacuumMapTarget } from "./state.js";
 
 export type VacuumCoverageArea =
   | {
@@ -106,7 +106,7 @@ export type VacuumStartCoverageCommand = {
 
 export type VacuumStartRoomZoneCleaningCommand = {
   command: "start_room_cleaning" | "start_zone_cleaning";
-  annotation: VacuumMapAnnotation;
+  target: VacuumMapTarget;
   route?: VacuumGoalCoordinates[];
   coverage?: {
     swathWidth?: number;
