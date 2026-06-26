@@ -23,6 +23,11 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./vacuum/node-runtime": {
+      "types": "./dist/vacuum/node-runtime.d.ts",
+      "import": "./dist/vacuum/node-runtime.js",
+      "default": "./dist/vacuum/node-runtime.js"
+    },
     "./*": {
       "types": "./dist/*.d.ts",
       "import": "./dist/*.js",
