@@ -6,4 +6,5 @@ export * from './drone/mission-control/drone-controller.js';
 export * from './ros/ros-bridge-api.js';
 export * from './ros/ros-types.js';
 export * from './ros/fetch-featured-entities.js';
+export * from './vacuum/index.js';
 export * from './logger.js';
